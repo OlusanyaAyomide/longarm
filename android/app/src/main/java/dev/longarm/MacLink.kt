@@ -41,7 +41,8 @@ import kotlin.coroutines.resume
  * - Home: always on, reconnecting by itself: the last known address, then USB (adb reverse →
  *   localhost), then Bonjour.
  * - Internet: to the Mac's Tailscale address, only while remote control is open, and only with
- *   the join code set on the Mac. The code is kept in memory for that session alone.
+ *   the join code set on the Mac. The right code earns a ticket from the Mac (kept encrypted, see
+ *   [SecretStore]), which lets the phone back in without the code until it goes 10 minutes unused.
  */
 object MacLink {
     enum class Mode { Home, Internet }
@@ -69,12 +70,14 @@ object MacLink {
     private lateinit var prefs: SharedPreferences
     private var loop: Job? = null
     private var socket: WebSocket? = null
-    private var joinCode: String? = null   // internet only: for this session's reconnects
+    private lateinit var secrets: SecretStore
+    private var joinCode: String? = null   // internet only: just typed, until the Mac swaps it for a ticket
 
     fun init(context: Context) {
         store = PairingStore(context)
         discovery = Discovery(context)
         prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
+        secrets = SecretStore(context)
         deviceName = Settings.Global.getString(context.contentResolver, "device_name") ?: Build.MODEL
         val mode = runCatching { Mode.valueOf(prefs.getString("mode", null) ?: "") }.getOrDefault(Mode.Home)
         store.load()?.let { p -> _state.value = State(waiting(mode), p.macName, mode = mode, internet = p.internetHost) }
@@ -85,7 +88,11 @@ object MacLink {
 
     val pairing: Pairing? get() = store.load()
 
+    /** Whether the phone can try getting back in over the internet without the code. */
+    val hasTicket: Boolean get() = secrets[TICKET] != null
+
     fun pair(pairing: Pairing) {
+        secrets[TICKET] = null
         store.save(pairing)
         stop()
         _state.value = State(waiting(state.value.mode), pairing.macName, mode = state.value.mode, internet = pairing.internetHost)
@@ -101,9 +108,12 @@ object MacLink {
         start()
     }
 
-    /** Internet mode: connects with the join code the owner just typed, until [disconnectInternet]. */
-    fun connectInternet(code: String) {
-        if (state.value.mode != Mode.Internet || store.load()?.internetHost == null) return
+    /**
+     * Internet mode: connects with the join code the owner just typed, or with no code on the
+     * ticket from last time, until [disconnectInternet].
+     */
+    fun connectInternet(code: String?) {
+        if (state.value.mode != Mode.Internet || store.load()?.internetHost == null || (code == null && !hasTicket)) return
         stop()
         joinCode = code
         _state.update { it.copy(status = Status.Connecting, joinError = null) }
@@ -119,6 +129,7 @@ object MacLink {
 
     fun forget() {
         stop()
+        secrets[TICKET] = null
         store.clear()
         _state.value = State()
     }
@@ -231,14 +242,19 @@ object MacLink {
                                     outcome = Outcome.Joined
                                     connected(webSocket, via)
                                 } else {
-                                    webSocket.send(JSONObject().put("type", "join").put("code", joinCode ?: "").toString())
+                                    val join = JSONObject().put("type", "join")
+                                    joinCode?.let { join.put("code", it) } ?: join.put("ticket", secrets[TICKET] ?: "")
+                                    webSocket.send(join.toString())
                                 }
                             }
                             "join" -> if (message.optBoolean("ok")) {
                                 outcome = Outcome.Joined
+                                secrets[TICKET] = message.optString("ticket").takeIf { it.isNotEmpty() }
+                                joinCode = null
                                 connected(webSocket, via)
                             } else {
                                 outcome = Outcome.Refused
+                                if (message.optBoolean("needsCode")) secrets[TICKET] = null
                                 _state.update { it.copy(joinError = message.optString("error", "The Mac didn't let this phone in")) }
                             }
                             "internet" -> rememberInternet(message)
@@ -297,4 +313,6 @@ object MacLink {
     }
 
     private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
+    private const val TICKET = "joinTicket"
 }

@@ -278,7 +278,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let alert = NSAlert()
             alert.messageText = joinCode.isSet ? "Change the join code" : "Choose a join code"
             alert.informativeText = (problem.map { "⚠︎ \($0)\n\n" } ?? "")
-                + "Your phone asks for this code each time it connects over the internet, on top of being paired. "
+                + "Your phone asks for this code when it connects over the internet, on top of being paired, "
+                + "and again after 10 minutes away. "
                 + "Five wrong codes in a row lock internet connections for 15 minutes."
             alert.accessoryView = accessory
             alert.addButton(withTitle: "Save")
@@ -407,6 +408,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate()
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         try? pairing?.resetToken()
+        joinCode.cancelTickets()
         server?.disconnectAll()
         if pairWindow?.isVisible == true { showPairWindow() }
     }

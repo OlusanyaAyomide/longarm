@@ -11,7 +11,8 @@ import Network
 ///
 /// Messages are JSON with a `type`. The link's own: hello {mac, macId, needsCode, internet {host,
 /// port}} to the phone and hello {device} back; join {code} from an internet phone, answered with
-/// join {ok, error}; internet {host, port} when the internet address changes. The rest are listed
+/// join {ok, ticket} or join {ok: false, error, needsCode}; a phone coming back sends join {ticket}
+/// instead (see `JoinCode`); internet {host, port} when the internet address changes. The rest are listed
 /// in `RemoteControl`. Video frames go to the phone and microphone audio comes back as binary messages.
 final class LinkServer {
     static let serviceType = "_longarm._tcp"
@@ -35,7 +36,8 @@ final class LinkServer {
         let connection: NWConnection
         let network: Network
         var name = "Phone"
-        var joined: Bool   // over the internet: once it gave the join code
+        var joined: Bool   // over the internet: once it gave the join code (or a ticket)
+        var ticket: String?
     }
 
     /// The address and port internet connections come to, while that listener is on.
@@ -254,22 +256,36 @@ final class LinkServer {
                 if phone.joined { notifyPhonesChanged() }
             }
         case "join" where !phone.joined:
-            join(phone, code: message["code"] as? String ?? "")
+            join(phone, code: message["code"] as? String, ticket: message["ticket"] as? String)
         default:
             guard phone.joined else { return }
+            if let ticket = phone.ticket { joinCode.used(ticket: ticket) }
             _ = onMessage?(message) { [weak self] reply in self?.send(reply, to: connection) }
         }
     }
 
-    /// An internet phone gives the join code: it's in, or told why not and dropped.
-    private func join(_ phone: Phone, code: String) {
+    /// An internet phone gives the join code, or the ticket it got for it: it's in, or told why
+    /// not and dropped. A ticket that has run out isn't a wrong code; the phone just asks for it.
+    private func join(_ phone: Phone, code: String?, ticket: String?) {
+        let id = ObjectIdentifier(phone.connection)
+        let letIn = { (ticket: String) in
+            self.phones[id]?.joined = true
+            self.phones[id]?.ticket = ticket
+            self.send(["type": "join", "ok": true, "ticket": ticket], to: phone.connection)
+            self.welcome(phone.connection)
+        }
+        if let ticket, code == nil {
+            if joinCode.admits(ticket: ticket) {
+                DebugLog.write("\(phone.name) back over the internet with its ticket")
+                return letIn(ticket)
+            }
+            return refuse(phone, "It's been more than 10 minutes. Enter the join code again.", needsCode: true)
+        }
         let refusal: String
-        switch joinCode.check(code) {
+        switch joinCode.check(code ?? "") {
         case .accepted:
             DebugLog.write("\(phone.name) joined over the internet")
-            phones[ObjectIdentifier(phone.connection)]?.joined = true
-            send(["type": "join", "ok": true], to: phone.connection)
-            return welcome(phone.connection)
+            return letIn(joinCode.issueTicket())
         case .wrong(let triesLeft):
             refusal = "Wrong code. \(triesLeft) \(triesLeft == 1 ? "try" : "tries") left before joining locks for 15 minutes."
         case .locked(let until):
@@ -277,8 +293,12 @@ final class LinkServer {
         case .notSet:
             refusal = "No join code is set on the Mac."
         }
+        refuse(phone, refusal, needsCode: false)
+    }
+
+    private func refuse(_ phone: Phone, _ refusal: String, needsCode: Bool) {
         DebugLog.write("\(phone.name) not let in over the internet: \(refusal)")
-        let data = Self.encode(["type": "join", "ok": false, "error": refusal])!
+        let data = Self.encode(["type": "join", "ok": false, "error": refusal, "needsCode": needsCode])!
         let context = NWConnection.ContentContext(identifier: "message", metadata: [NWProtocolWebSocket.Metadata(opcode: .text)])
         phone.connection.send(content: data, contentContext: context, isComplete: true, completion: .contentProcessed { [weak self] _ in
             self?.drop(phone.connection)
@@ -286,7 +306,8 @@ final class LinkServer {
     }
 
     private func drop(_ connection: NWConnection) {
-        guard phones.removeValue(forKey: ObjectIdentifier(connection)) != nil else { return }
+        guard let phone = phones.removeValue(forKey: ObjectIdentifier(connection)) else { return }
+        if let ticket = phone.ticket { joinCode.used(ticket: ticket) }   // the 10 minutes start when it leaves
         framesInFlight.remove(ObjectIdentifier(connection))
         waitingFrames[ObjectIdentifier(connection)] = nil
         needKeyFrame.remove(ObjectIdentifier(connection))

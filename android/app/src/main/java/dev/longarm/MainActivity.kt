@@ -106,7 +106,14 @@ class MainActivity : ComponentActivity() {
                         controlling -> RemotePane(state, onExit = { controlling = false }, Modifier.fillMaxSize())
                         else -> HomeScreen(
                             state,
-                            onControl = { if (state.mode == MacLink.Mode.Internet) askingCode = true else controlling = true },
+                            onControl = {
+                                if (state.mode == MacLink.Mode.Internet && !MacLink.hasTicket) {
+                                    askingCode = true
+                                } else {
+                                    MacLink.connectInternet(code = null)   // over the internet: on last time's ticket
+                                    controlling = true
+                                }
+                            },
                             onForget = {
                                 MacLink.forget()
                                 LinkService.stop(this@MainActivity)
@@ -246,7 +253,7 @@ private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: ()
         val hint = when {
             internet && state.internet == null ->
                 "On the Mac: Longarm menu → Internet, over Tailscale. Then connect at home once, or pair again."
-            internet -> "Tailscale must be on on this phone. You'll be asked for the join code you set on the Mac."
+            internet -> "Tailscale must be on on this phone. You'll be asked for the join code you set on the Mac after 10 minutes away."
             connected && !remote.allowed -> "First, on the Mac: Longarm menu → Allow Remote Control"
             else -> null
         }
@@ -259,7 +266,7 @@ private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: ()
     }
 }
 
-/** Asked every time remote control opens over the internet; never stored. */
+/** Asked when there's no ticket from the Mac, or it ran out (10 minutes unused); never stored. */
 @Composable
 private fun JoinCodeDialog(macName: String, error: String?, onJoin: (String) -> Unit, onCancel: () -> Unit) {
     var code by remember { mutableStateOf("") }

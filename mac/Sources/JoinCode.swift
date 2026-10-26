@@ -1,10 +1,16 @@
 import CommonCrypto
+import CryptoKit
 import Foundation
 import Security
 
 /// The code a phone must give to join over the internet, on top of the pairing token: the owner
-/// sets it on the Mac and types it on the phone each time. Kept in the Keychain as a salted
-/// PBKDF2 hash. Five wrong codes in a row lock internet joins for 15 minutes.
+/// sets it on the Mac and types it on the phone. Kept in the Keychain as a salted PBKDF2 hash.
+/// Five wrong codes in a row lock internet joins for 15 minutes.
+///
+/// After the right code the phone gets a ticket, so stepping away briefly doesn't mean typing it
+/// again: the ticket lets it back in until 10 minutes pass without it being used (connected, or
+/// sending input). Tickets live only in this Mac's memory, as hashes; a new code, Reset Pairing or
+/// quitting Longarm cancels them all.
 final class JoinCode {
     enum Check {
         case accepted
@@ -14,6 +20,7 @@ final class JoinCode {
     }
 
     static let lengths = 6...12
+    static let ticketIdle: TimeInterval = 10 * 60
     private static let account = "internet-join-code"
     private static let rounds: UInt32 = 100_000
     private static let triesBeforeLock = 5
@@ -21,6 +28,7 @@ final class JoinCode {
 
     private var wrongTries = 0
     private var lockedUntilDate: Date?
+    private var tickets: [Data: Date] = [:]   // hash of the ticket → when it was last used
 
     var isSet: Bool { Keychain.read(Self.account) != nil }
 
@@ -41,6 +49,41 @@ final class JoinCode {
         Keychain.save("\(salt.hex):\(Self.hash(code, salt: salt).hex)", account: Self.account)
         wrongTries = 0
         lockedUntilDate = nil
+        cancelTickets()
+    }
+
+    // MARK: - Tickets
+
+    /// A new ticket for a phone that just gave the right code.
+    func issueTicket() -> String {
+        let ticket = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.hex
+        tickets[Self.digest(ticket)] = Date()
+        return ticket
+    }
+
+    /// Whether [ticket] still lets a phone in; using it counts as activity.
+    func admits(ticket: String) -> Bool {
+        let key = Self.digest(ticket)
+        guard let lastUsed = tickets[key], Date().timeIntervalSince(lastUsed) < Self.ticketIdle else {
+            tickets[key] = nil
+            return false
+        }
+        tickets[key] = Date()
+        return true
+    }
+
+    /// The phone holding [ticket] is still at it (input, or just leaving).
+    func used(ticket: String) {
+        let key = Self.digest(ticket)
+        if tickets[key] != nil { tickets[key] = Date() }
+    }
+
+    func cancelTickets() {
+        tickets.removeAll()
+    }
+
+    private static func digest(_ ticket: String) -> Data {
+        Data(SHA256.hash(data: Data(ticket.utf8)))
     }
 
     func check(_ code: String) -> Check {
