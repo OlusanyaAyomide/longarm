@@ -5,9 +5,9 @@
   "description": "Helps a Longarm phone and Mac find each other over the internet; it never sees the screen or input.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=24" },
+  "engines": { "node": ">=22.6" },
   "scripts": {
-    "start": "node src/main.ts",
+    "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning src/main.ts",
     "test": "node --test \"test/**/*.test.ts\"",
     "check": "tsc"
   },

@@ -8,7 +8,8 @@ User=longarm
 Group=longarm
 WorkingDirectory=/opt/longarm/server
 EnvironmentFile=/etc/longarm/rendezvous.env
-ExecStart=/usr/bin/env node src/main.ts
+# Node 22.6+ runs the TypeScript directly with this flag (24 and later don't need it, but accept it).
+ExecStart=/usr/bin/env node --experimental-strip-types --disable-warning=ExperimentalWarning src/main.ts
 Restart=on-failure
 RestartSec=2
 
