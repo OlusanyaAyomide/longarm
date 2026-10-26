@@ -103,6 +103,7 @@ object InternetLink {
     private var ladder: Job? = null
     private var offlineSince = 0L
     private var backoffMs = 1_000L
+    private var serverFailures = 0   // in a row, before ever signing in this time
 
     fun init(context: Context, deviceName: String) {
         this.context = context.applicationContext
@@ -124,6 +125,7 @@ object InternetLink {
         active = true
         everJoined = false
         offlineSince = 0
+        serverFailures = 0
         backoffMs = 1_000
         onConnecting()
         openRendezvous()
@@ -193,7 +195,14 @@ object InternetLink {
         scope.launch {
             if (webSocket !== rendezvous || !active) return@launch
             rendezvous = null
+            val wasSignedIn = signedIn
             signedIn = false
+            // Never reached it this time (a wrong or old address, no internet): say so rather than
+            // trying forever. Once in, a lost server is retried for as long as the session lasts.
+            if (!wasSignedIn && !everJoined && ++serverFailures >= 4) {
+                val host = mac?.rendezvous?.let { runCatching { java.net.URI(it).host }.getOrNull() } ?: "the internet server"
+                return@launch giveUp("Can't reach $host. Is the phone online? If the Mac's internet server changed, connect at home once so this phone learns it.")
+            }
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(8_000)
             if (active && rendezvous == null) openRendezvous()
@@ -210,6 +219,7 @@ object InternetLink {
             }
             "ready" -> {
                 signedIn = true
+                serverFailures = 0
                 backoffMs = 1_000
                 readRelay(message.optJSONObject("turn"))
                 // A session that's still up only needs new paths; otherwise start one.
