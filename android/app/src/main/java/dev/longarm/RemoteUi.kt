@@ -1,8 +1,11 @@
 package dev.longarm
 
 import android.graphics.SurfaceTexture
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -221,15 +224,25 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
                 modifier = Modifier.align(Alignment.Center).padding(48.dp),
             )
         }
-        // Over the internet: the last picture stays while it reconnects, and the path shows while it's up.
+        // Over the internet: the last picture stays while it reconnects ("Reconnecting…" for as long
+        // as that lasts), and the path shows for a few seconds when it's found or changes.
+        var pathShown by remember { mutableStateOf(false) }
+        LaunchedEffect(relayed) {
+            if (relayed == null) return@LaunchedEffect
+            pathShown = true
+            delay(3_000)
+            pathShown = false
+        }
+        val reconnecting = area != null && state.status != MacLink.Status.Connected
         val pill = when {
-            area != null && state.status != MacLink.Status.Connected -> "Reconnecting…"
-            controls && state.mode == MacLink.Mode.Internet && relayed != null -> if (relayed == true) "Relay" else "Direct"
+            reconnecting -> "Reconnecting…"
+            state.mode == MacLink.Mode.Internet && relayed != null -> if (relayed == true) "Relay" else "Direct"
             else -> null
         }
-        if (pill != null) {
+        val pillAlpha by animateFloatAsState(if (pill != null && (reconnecting || pathShown)) 1f else 0f, tween(400), label = "pill")
+        if (pill != null && pillAlpha > 0f) {
             Text(pill, color = Color.White, fontSize = 12.sp,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp).alpha(pillAlpha)
                     .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp))
         }
         // The controls sit above the keyboard; empty space lets touches through to the picture.
