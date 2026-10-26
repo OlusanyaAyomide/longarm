@@ -181,23 +181,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !AXIsProcessTrusted() {
             _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
         }
-        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        guard !CGPreflightScreenCaptureAccess() else { return }
+        // macOS shows its own Screen Recording prompt only once per app; after that, ours.
+        if UserDefaults.standard.bool(forKey: "screenRecordingAsked") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.askForScreenRecording() }
+        } else {
+            UserDefaults.standard.set(true, forKey: "screenRecordingAsked")
+            CGRequestScreenCaptureAccess()
+        }
+    }
+
+    /// Like macOS's own prompt for Accessibility: says why, and goes straight to the right Settings page.
+    private func askForScreenRecording() {
+        guard !CGPreflightScreenCaptureAccess() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Allow Longarm to record this screen"
+        alert.informativeText = "Longarm shows your Mac's screen on your phone. Turn on Longarm in Screen & System Audio Recording, then let macOS quit and reopen it."
+        alert.icon = NSApp.applicationIconImage
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn { openScreenRecordingPane() }
+    }
+
+    private func openScreenRecordingPane() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
     }
 
     @objc private func openAccessibilitySettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
     }
 
-    /// Screen Recording only takes effect after Longarm restarts.
-    @objc private func openScreenRecordingSettings() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
-        let alert = NSAlert()
-        alert.messageText = "Turn on Longarm, then reopen it"
-        alert.informativeText = "In Screen & System Audio Recording, turn on Longarm. macOS only lets it see the screen after it restarts: choose Quit Longarm from its menu and open it again."
-        alert.addButton(withTitle: "OK")
-        NSApp.activate()
-        alert.runModal()
-    }
+    @objc private func openScreenRecordingSettings() { askForScreenRecording() }
     @objc private func setDeepgramKey() { askForApiKey(Self.deepgramKey) }
 
     private func askForApiKey(_ kind: ApiKeyKind) {
