@@ -9,7 +9,7 @@ import IOKit.pwr_mgt
 /// shows for a few seconds when it starts. It also stops when the phone disconnects and after 10
 /// minutes without input from it.
 ///
-/// Phone → Mac:  remote {on}, pointer {action: click | drag-start | drag-move | drag-end,
+/// Phone → Mac:  remote {on}, quality {light: the phone is off Wi-Fi}, pointer {action: click | drag-start | drag-move | drag-end,
 ///               x, y (0…1 of the screen; left out = where the pointer is), button: left | right, count}, scroll {x, y, dx, dy in
 ///               points}, type {text}, key {key, modifiers: [cmd, shift, option, control]},
 ///               keyframe (the phone's video decoder needs one), dictate {on}, then binary audio:
@@ -75,7 +75,11 @@ final class RemoteControl: NSObject {
     /// Handles a message from the phone; returns false if it isn't one of these.
     func handle(_ message: [String: Any], reply: ([String: Any]) -> Void) -> Bool {
         guard let type = message["type"] as? String,
-              ["remote", "pointer", "scroll", "type", "key", "keyframe", "dictate"].contains(type) else { return false }
+              ["remote", "quality", "pointer", "scroll", "type", "key", "keyframe", "dictate"].contains(type) else { return false }
+        if type == "quality" {   // the phone is on mobile data (light) or Wi-Fi
+            share.capture.setLight(message["light"] as? Bool ?? false)
+            return true
+        }
         if type == "remote" {
             if message["on"] as? Bool == true { start(reply: reply) } else { stop(because: nil) }
             return true

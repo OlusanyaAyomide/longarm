@@ -2,6 +2,7 @@ package dev.longarm
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Build
 import android.provider.Settings
 import kotlinx.coroutines.CoroutineScope
@@ -34,16 +35,28 @@ import kotlin.coroutines.resume
 
 /**
  * The live link to the paired Mac: one TLS WebSocket, pinned to the Mac's certificate, carrying
- * remote control messages one way and the screen's video the other (see [Remote]). Reconnects on
- * its own, trying the last known address, then USB (adb reverse → localhost), then Bonjour.
+ * remote control messages one way and the screen's video the other (see [Remote]).
+ *
+ * The owner picks how it connects ([Mode]); it never falls back from one to the other:
+ * - Home: always on, reconnecting by itself: the last known address, then USB (adb reverse →
+ *   localhost), then Bonjour.
+ * - Internet: to the Mac's Tailscale address, only while remote control is open, and only with
+ *   the join code set on the Mac. The code is kept in memory for that session alone.
  */
 object MacLink {
-    enum class Status { Unpaired, Connecting, Searching, Connected }
+    enum class Mode { Home, Internet }
+
+    enum class Status { Unpaired, Idle, Connecting, Searching, Connected }
 
     data class State(
         val status: Status = Status.Unpaired,
         val macName: String = "",
-        val via: String = "",   // "Wi-Fi" or "USB"
+        val via: String = "",   // "Wi-Fi", "USB" or "Internet"
+        val mode: Mode = Mode.Home,
+        /** Why the Mac didn't let us in over the internet (a wrong code, say), until the next try. */
+        val joinError: String? = null,
+        /** The Mac's Tailscale address, once known: needed for [Mode.Internet]. */
+        val internet: String? = null,
     )
 
     private val _state = MutableStateFlow(State())
@@ -53,23 +66,55 @@ object MacLink {
     private lateinit var store: PairingStore
     private lateinit var discovery: Discovery
     private lateinit var deviceName: String
+    private lateinit var prefs: SharedPreferences
     private var loop: Job? = null
     private var socket: WebSocket? = null
+    private var joinCode: String? = null   // internet only: for this session's reconnects
 
     fun init(context: Context) {
         store = PairingStore(context)
         discovery = Discovery(context)
+        prefs = context.getSharedPreferences("link", Context.MODE_PRIVATE)
         deviceName = Settings.Global.getString(context.contentResolver, "device_name") ?: Build.MODEL
-        store.load()?.let { p -> _state.update { it.copy(status = Status.Connecting, macName = p.macName) } }
+        val mode = runCatching { Mode.valueOf(prefs.getString("mode", null) ?: "") }.getOrDefault(Mode.Home)
+        store.load()?.let { p -> _state.value = State(waiting(mode), p.macName, mode = mode, internet = p.internetHost) }
     }
+
+    /** Before connecting: home connects by itself, internet waits to be asked. */
+    private fun waiting(mode: Mode) = if (mode == Mode.Home) Status.Connecting else Status.Idle
 
     val pairing: Pairing? get() = store.load()
 
     fun pair(pairing: Pairing) {
         store.save(pairing)
         stop()
-        _state.value = State(status = Status.Connecting, macName = pairing.macName)
+        _state.value = State(waiting(state.value.mode), pairing.macName, mode = state.value.mode, internet = pairing.internetHost)
         start()
+    }
+
+    fun setMode(mode: Mode) {
+        if (mode == state.value.mode) return
+        prefs.edit().putString("mode", mode.name).apply()
+        stop()
+        joinCode = null
+        _state.update { State(if (it.status == Status.Unpaired) Status.Unpaired else waiting(mode), it.macName, mode = mode, internet = it.internet) }
+        start()
+    }
+
+    /** Internet mode: connects with the join code the owner just typed, until [disconnectInternet]. */
+    fun connectInternet(code: String) {
+        if (state.value.mode != Mode.Internet || store.load()?.internetHost == null) return
+        stop()
+        joinCode = code
+        _state.update { it.copy(status = Status.Connecting, joinError = null) }
+        loop = scope.launch { internetLoop() }
+    }
+
+    fun disconnectInternet() {
+        if (state.value.mode != Mode.Internet) return
+        stop()
+        joinCode = null
+        _state.update { if (it.status == Status.Unpaired) it else it.copy(status = Status.Idle, via = "") }
     }
 
     fun forget() {
@@ -78,9 +123,9 @@ object MacLink {
         _state.value = State()
     }
 
-    /** Starts (or keeps) the reconnect loop. Called by [LinkService]. */
+    /** Starts (or keeps) the home reconnect loop. Called by [LinkService]. */
     fun start() {
-        if (loop?.isActive == true || store.load() == null) return
+        if (loop?.isActive == true || store.load() == null || state.value.mode != Mode.Home) return
         loop = scope.launch { connectLoop() }
     }
 
@@ -106,7 +151,7 @@ object MacLink {
             var connected = false
             for ((host, via) in listOf(pairing.host to "Wi-Fi", "127.0.0.1" to "USB")) {
                 _state.update { it.copy(status = Status.Connecting, macName = pairing.macName) }
-                if (connectAndWait(client, pairing, host, via)) { connected = true; break }
+                if (connectAndWait(client, pairing, host, pairing.port, via) != Outcome.Failed) { connected = true; break }
             }
             if (connected) { backoffMs = 1_000L; continue }   // dropped after a good session: retry at once
 
@@ -122,31 +167,83 @@ object MacLink {
         }
     }
 
-    /** Opens one connection and suspends until it closes. Returns true if it ever opened. */
-    private suspend fun connectAndWait(client: OkHttpClient, pairing: Pairing, host: String, via: String): Boolean =
+    /** Over Tailscale, retrying while the session lasts; a refused code ends it. */
+    private suspend fun internetLoop() {
+        var backoffMs = 1_000L
+        while (scope.isActive) {
+            val pairing = store.load() ?: return
+            val host = pairing.internetHost ?: return
+            val port = pairing.internetPort ?: return
+            _state.update { it.copy(status = Status.Connecting) }
+            when (connectAndWait(pinnedClient(pairing.fingerprint), pairing, host, port, "Internet")) {
+                Outcome.Refused -> {
+                    joinCode = null
+                    _state.update { it.copy(status = Status.Idle, via = "") }
+                    return
+                }
+                Outcome.Joined -> backoffMs = 1_000L
+                Outcome.Failed -> {
+                    delay(backoffMs)
+                    backoffMs = (backoffMs * 2).coerceAtMost(8_000L)
+                }
+            }
+        }
+    }
+
+    private enum class Outcome { Failed, Joined, Refused }
+
+    private fun connected(webSocket: WebSocket, via: String) {
+        socket = webSocket
+        _state.update { it.copy(status = Status.Connected, via = via, joinError = null) }
+        Remote.onConnected()
+    }
+
+    /** The Mac's Tailscale address, as it tells us (when its internet connections are on). */
+    private fun rememberInternet(address: JSONObject?) {
+        val host = address?.optString("host")?.takeIf { it.isNotEmpty() } ?: return
+        val pairing = store.load() ?: return
+        val port = address.optInt("port").takeIf { it > 0 }
+        if (host != pairing.internetHost || port != pairing.internetPort) store.save(pairing.copy(internetHost = host, internetPort = port))
+        _state.update { it.copy(internet = host) }
+    }
+
+    /** Opens one connection and suspends until it closes: whether it got in, failed, or the Mac refused the code. */
+    private suspend fun connectAndWait(client: OkHttpClient, pairing: Pairing, host: String, port: Int, via: String): Outcome =
         suspendCancellableCoroutine { continuation ->
-            var opened = false
+            var outcome = Outcome.Failed
             val request = Request.Builder()
-                .url("wss://$host:${pairing.port}/")
+                .url("wss://$host:$port/")
                 .header("Authorization", "Bearer ${pairing.token}")
                 .build()
             val ws = client.newWebSocket(request, object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    opened = true
-                    scope.launch {
-                        socket = webSocket
-                        _state.update { it.copy(status = Status.Connected, via = via) }
-                        send(JSONObject().put("type", "hello").put("device", deviceName))
-                        Remote.onConnected()
-                    }
+                    webSocket.send(JSONObject().put("type", "hello").put("device", deviceName).toString())
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
                     scope.launch {
                         val message = runCatching { JSONObject(text) }.getOrNull() ?: return@launch
-                        val type = message.optString("type")
-                        if (type == "hello") _state.update { it.copy(macName = message.optString("mac", it.macName)) }
-                        else Remote.handle(type, message)
+                        when (val type = message.optString("type")) {
+                            "hello" -> {
+                                _state.update { it.copy(macName = message.optString("mac", it.macName)) }
+                                rememberInternet(message.optJSONObject("internet"))
+                                if (!message.optBoolean("needsCode")) {
+                                    outcome = Outcome.Joined
+                                    connected(webSocket, via)
+                                } else {
+                                    webSocket.send(JSONObject().put("type", "join").put("code", joinCode ?: "").toString())
+                                }
+                            }
+                            "join" -> if (message.optBoolean("ok")) {
+                                outcome = Outcome.Joined
+                                connected(webSocket, via)
+                            } else {
+                                outcome = Outcome.Refused
+                                _state.update { it.copy(joinError = message.optString("error", "The Mac didn't let this phone in")) }
+                            }
+                            "internet" -> rememberInternet(message)
+                            else -> Remote.handle(type, message)
+                        }
                     }
                 }
 
@@ -164,7 +261,7 @@ object MacLink {
                     scope.launch {
                         if (socket === webSocket) socket = null
                         Remote.onDisconnected()
-                        if (continuation.isActive) continuation.resume(opened)
+                        if (continuation.isActive) continuation.resume(outcome)
                     }
                 }
             })

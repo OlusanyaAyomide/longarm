@@ -3,8 +3,11 @@ import CoreImage
 
 /// Menu bar app: the phone link, the screen it's shown, and remote control. Off until the owner
 /// allows remote control from the menu; the icon turns orange and says "Remote" while it's on.
+/// The menu also switches each way of connecting on or off: home Wi-Fi, and the internet over
+/// Tailscale with a join code.
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let port: UInt16 = 47900
+    static let internetPort: UInt16 = 47901
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let share = ScreenShare()
@@ -13,6 +16,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pairing: Pairing?
     private var server: LinkServer?
     private var serverError: String?
+    private var listenerProblems: [LinkServer.Network: String] = [:]
+    private let joinCode = JoinCode()
+    private var tailscaleWatch: Timer?
     private var phones: [String] = []
     private var pairWindow: NSWindow?
     private var quitSignal: DispatchSourceSignal?
@@ -52,7 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         do {
             let pairing = try Pairing()
-            let server = LinkServer(port: Self.port, pairing: pairing, macName: macName)
+            let server = LinkServer(ports: [.home: Self.port, .internet: Self.internetPort],
+                                    pairing: pairing, joinCode: joinCode, macName: macName)
             server.greeting = { [weak self] in
                 guard let self else { return [] }
                 return [self.remote.stateMessage(), self.share.message()]
@@ -64,16 +71,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if names.isEmpty { self?.remote.stop(because: nil) }
                 self?.refreshIcon()
             }
-            server.onFailure = { [weak self] error in
-                self?.serverError = error.localizedDescription
+            server.onListenerProblem = { [weak self] network, problem in
+                self?.listenerProblems[network] = problem
                 self?.refreshIcon()
             }
-            try server.start()
+            try server.setHome(homeOn)
             self.pairing = pairing
             self.server = server
         } catch {
             serverError = error.localizedDescription
         }
+        refreshInternet()
         refreshIcon()
         askForPermissions()
         if pairing != nil, UserDefaults.standard.object(forKey: "paired") == nil { showPairWindow() }   // first run
@@ -127,7 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         statusItem.length = NSStatusItem.squareLength
         button.title = ""
-        let symbol = serverError != nil ? "exclamationmark.triangle" : "iphone"
+        let symbol = serverError != nil || !listenerProblems.isEmpty ? "exclamationmark.triangle" : "iphone"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Longarm")
         button.image?.isTemplate = true
         button.contentTintColor = nil
@@ -151,6 +159,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let problem = share.capture.problem { info("⚠︎ \(problem)") }
         menu.addItem(.separator())
+        // Each way in is on only when switched on here: the phone doesn't fall back from one to the other.
+        info("Connect from")
+        let home = action("Home Wi-Fi (or USB)", #selector(toggleHome))
+        home.state = homeOn ? .on : .off
+        home.indentationLevel = 1
+        if let problem = listenerProblems[.home] { info("    ⚠︎ \(problem)") }
+        let internet = action("Internet, over Tailscale", #selector(toggleInternet))
+        internet.state = internetOn ? .on : .off
+        internet.indentationLevel = 1
+        if internetOn {
+            if let lockedUntil = joinCode.lockedUntil {
+                info("    ⚠︎ Locked after wrong codes, until \(lockedUntil.formatted(date: .omitted, time: .shortened))")
+            }
+            if let problem = listenerProblems[.internet] {
+                info("    ⚠︎ \(problem)")
+            } else if let address = server?.internet?.host {
+                info("    \(address) · the phone needs your join code")
+            } else {
+                info("    ⚠︎ Tailscale isn't connected on this Mac")
+            }
+        }
+        action(joinCode.isSet ? "Change Join Code…" : "Set Join Code…", #selector(setJoinCode)).indentationLevel = 1
+        menu.addItem(.separator())
         // Both are needed before the phone can see and use the Mac.
         if AXIsProcessTrusted() { info("✓ Accessibility (to click and type)") } else {
             _ = action("Allow Accessibility… (to click and type)", #selector(openAccessibilitySettings))
@@ -171,6 +202,102 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleRemoteAllowed() { remote.allowed.toggle() }
+
+    // MARK: - Ways to connect
+
+    private var homeOn: Bool {
+        get { UserDefaults.standard.object(forKey: "homeOn") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "homeOn") }
+    }
+
+    private var internetOn: Bool {
+        get { UserDefaults.standard.bool(forKey: "internetOn") }
+        set { UserDefaults.standard.set(newValue, forKey: "internetOn") }
+    }
+
+    @objc private func toggleHome() {
+        homeOn.toggle()
+        do { try server?.setHome(homeOn) } catch { listenerProblems[.home] = error.localizedDescription }
+        refreshIcon()
+    }
+
+    @objc private func toggleInternet() {
+        if !internetOn {
+            if !joinCode.isSet { askForJoinCode() }
+            guard joinCode.isSet else { return }
+            if Tailscale.address() == nil { explainTailscale() }
+        }
+        internetOn.toggle()
+        refreshInternet()
+    }
+
+    /// Listens on the Tailscale address while internet connections are on, following it as Tailscale
+    /// connects, disconnects or changes it.
+    private func refreshInternet() {
+        let host = internetOn ? Tailscale.address() : nil
+        if host != server?.internet?.host {
+            DebugLog.write(host.map { "internet connections: listening on \($0)" } ?? "internet connections: off")
+            do { try server?.setInternet(host: host) } catch { listenerProblems[.internet] = error.localizedDescription }
+        }
+        if internetOn, tailscaleWatch == nil {
+            tailscaleWatch = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshInternet() }
+        } else if !internetOn {
+            tailscaleWatch?.invalidate()
+            tailscaleWatch = nil
+        }
+        refreshIcon()
+    }
+
+    private func explainTailscale() {
+        let alert = NSAlert()
+        alert.messageText = "Longarm reaches your Mac over Tailscale"
+        alert.informativeText = """
+            Tailscale is a free private network between your own devices, so the Mac never has to be \
+            open to the whole internet. Install it on this Mac and on your phone, and sign in to the same \
+            account on both. Longarm starts listening as soon as Tailscale connects.
+            """
+        alert.addButton(withTitle: "Get Tailscale")
+        alert.addButton(withTitle: "Later")
+        NSApp.activate()
+        if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(URL(string: "https://tailscale.com/download")!) }
+    }
+
+    @objc private func setJoinCode() { askForJoinCode() }
+
+    /// The code is typed twice and never shown. Changing it drops phones joined with the old one.
+    private func askForJoinCode() {
+        let code = NSSecureTextField(frame: NSRect(x: 0, y: 30, width: 220, height: 24))
+        code.placeholderString = "\(JoinCode.lengths.lowerBound) to \(JoinCode.lengths.upperBound) digits"
+        let again = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        again.placeholderString = "The same again"
+        let accessory = NSView(frame: NSRect(x: 0, y: 0, width: 220, height: 54))
+        accessory.addSubview(code)
+        accessory.addSubview(again)
+        var problem: String?
+        while true {
+            let alert = NSAlert()
+            alert.messageText = joinCode.isSet ? "Change the join code" : "Choose a join code"
+            alert.informativeText = (problem.map { "⚠︎ \($0)\n\n" } ?? "")
+                + "Your phone asks for this code each time it connects over the internet, on top of being paired. "
+                + "Five wrong codes in a row lock internet connections for 15 minutes."
+            alert.accessoryView = accessory
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = code
+            NSApp.activate()
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            if !JoinCode.isAcceptable(code.stringValue) {
+                problem = "Use \(JoinCode.lengths.lowerBound) to \(JoinCode.lengths.upperBound) digits."
+            } else if code.stringValue != again.stringValue {
+                problem = "The two codes don't match."
+            } else {
+                joinCode.set(code.stringValue)
+                server?.disconnect(.internet)
+                return
+            }
+            again.stringValue = ""
+        }
+    }
 
     // MARK: - Permissions
 
@@ -285,7 +412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func pairingLink() -> String? {
-        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, macName: macName)
+        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, internet: server?.internet, macName: macName)
     }
 
     @objc private func showPairWindow() {
@@ -300,6 +427,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             \(macName) · \(Self.primaryIPv4() ?? "no Wi-Fi address"):\(Self.port)
             Phone and Mac on the same Wi-Fi, or over USB with:
             adb reverse tcp:\(Self.port) tcp:\(Self.port)
+            \(server?.internet.map { "Over the internet: Tailscale, \($0.host):\($0.port)" } ?? "")
             """)
         detail.alignment = .center
         detail.textColor = .secondaryLabelColor

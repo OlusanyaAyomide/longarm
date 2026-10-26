@@ -67,6 +67,7 @@ class LinkService : Service() {
             MacLink.Status.Connected -> "Connected to ${state.macName} · ${state.via}"
             MacLink.Status.Searching -> "Looking for ${state.macName}…"
             MacLink.Status.Connecting -> "Connecting to ${state.macName}…"
+            MacLink.Status.Idle -> "${state.macName}: over the internet, not connected"
             MacLink.Status.Unpaired -> "Not paired"
         }
         val text = "Open Longarm to see and control your Mac"

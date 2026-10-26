@@ -17,7 +17,7 @@ Mac, an Android app on the phone, paired with a QR code, talking directly over y
   | Tap (quick or slow) | click |
   | Tap twice | double-click |
   | Two-finger tap | right-click there |
-| **R** button | right-click where the Mac's pointer is |
+  | **R** button | right-click where the Mac's pointer is |
   | Long-press, then drag | click-and-drag (select text, move windows) |
   | One-finger drag | scroll (moves the view instead when zoomed in) |
   | Two fingers moving together | scroll |
@@ -32,11 +32,31 @@ Mac, an Android app on the phone, paired with a QR code, talking directly over y
   through a speech-to-text service (Deepgram); the words collect in a box on the keyboard and ↵
   types them on the Mac.
 
+## At home or over the internet
+
+You choose how the phone connects, on both ends; it never falls back from one to the other.
+
+- **At home:** phone and Mac on the same Wi-Fi (or USB with `adb reverse`). Switched on in the
+  Mac's menu under *Connect from → Home Wi-Fi*, and picked on the phone with **At home**.
+- **Over the internet:** through [Tailscale](https://tailscale.com), a free private network
+  between your own devices, so the Mac is never open to the whole internet. Install it on the
+  Mac and the phone, signed in to the same account. On the Mac, turn on *Connect from → Internet,
+  over Tailscale* and choose a **join code** (6–12 digits). On the phone, pick **Over the
+  internet**; it asks for the code each time you open remote control. Off Wi-Fi, the picture
+  drops to 30 fps and a lower resolution to spare your data.
+
+The phone learns the Mac's Tailscale address once it connects at home (or from a fresh pairing
+code). To try internet connections without Tailscale, point them at another address with
+`defaults write dev.longarm.mac internetHost <address>`.
+
 ## Safety
 
 - Remote control is **off until you allow it** in the Mac's menu (Allow Remote Control).
 - Only a phone that scanned the Mac's QR code can connect: a random token, and the phone pins the
   Mac's self-signed TLS certificate. Reset Pairing in the menu revokes every phone.
+- Over the internet, the phone also needs the join code. The Mac keeps only a salted PBKDF2 hash
+  of it in the Keychain; five wrong codes in a row lock internet joins for 15 minutes. The internet
+  listener runs only on the Tailscale address, and the home one turns away Tailscale connections.
 - While a phone is in control, the Mac's menu bar shows an orange **Remote** (Stop is in its
   menu), and a notice appears on screen when it starts.
 - It stops when the phone disconnects and after 10 minutes without input. The Mac's display and
@@ -83,7 +103,8 @@ Phone (Kotlin, Compose)                          Mac (Swift, menu bar)
   PhoneMic ──────────── PCM ────────────▶  PhoneDictation ─▶ SpeechEngine (Deepgram)
 ```
 
-One TLS WebSocket (port 47900, found over Bonjour as `_longarm._tcp`) carries JSON messages and
+One TLS WebSocket (port 47900 at home, found over Bonjour as `_longarm._tcp`; 47901 on the
+Tailscale address) carries JSON messages and
 binary frames; the full list is at the top of `mac/Sources/RemoteControl.swift`. Video keeps the
 latency low: the encoder never reorders frames, a busy link skips ahead to the next key frame
 instead of queueing, and a still screen is re-sent a few times so text sharpens.
@@ -93,7 +114,6 @@ delivered), `StreamingTranscriber` / `SpeechEngine` (speech-to-text).
 
 ## Roadmap
 
-- Use away from home over [Tailscale](https://tailscale.com), with lower quality on mobile data.
 - An AI agent on the phone that operates the Mac through named actions ("open Terminal and run…"),
   with screen reading for the rest.
 

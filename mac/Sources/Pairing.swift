@@ -32,7 +32,8 @@ final class Pairing {
         try Self.writePrivate(token, to: directory.appendingPathComponent("token"))
     }
 
-    func link(host: String, port: UInt16, macName: String) -> String {
+    /// With `internet`, the phone can also connect over Tailscale (see `LinkServer`).
+    func link(host: String, port: UInt16, internet: (host: String, port: UInt16)?, macName: String) -> String {
         var components = URLComponents()
         components.scheme = "longarm"
         components.host = "pair"
@@ -44,6 +45,9 @@ final class Pairing {
             URLQueryItem(name: "id", value: macId),
             URLQueryItem(name: "n", value: macName),
         ]
+        if let internet {
+            components.queryItems! += [URLQueryItem(name: "ih", value: internet.host), URLQueryItem(name: "ip", value: String(internet.port))]
+        }
         return components.string!
     }
 

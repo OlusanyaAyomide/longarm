@@ -3,6 +3,12 @@ package dev.longarm
 import android.content.Context
 import android.content.SharedPreferences
 import android.graphics.SurfaceTexture
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -77,8 +83,20 @@ object Remote {
         needKeyFrame = ::requestKeyFrame,
     )
 
+    /** Wi-Fi networks the phone is on. With none (mobile data), the Mac sends a lighter picture. */
+    private val wifi = mutableSetOf<Network>()
+
     fun init(context: Context) {
         prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE)
+        val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
+        context.getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) { if (wifi.add(network) && wifi.size == 1) sendQuality() }
+            override fun onLost(network: Network) { if (wifi.remove(network) && wifi.isEmpty()) sendQuality() }
+        }, Handler(Looper.getMainLooper()))
+    }
+
+    private fun sendQuality() {
+        MacLink.send(JSONObject().put("type", "quality").put("light", wifi.isEmpty()))
     }
 
     fun notice(text: String) {
@@ -223,6 +241,7 @@ object Remote {
     // MARK: the link
 
     fun onConnected() {
+        sendQuality()
         if (wanted) setWanted(true)
     }
 

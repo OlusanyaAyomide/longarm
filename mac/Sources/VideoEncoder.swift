@@ -4,17 +4,22 @@ import VideoToolbox
 /// Hardware H.264 for the phone's view of the screen, tuned for live use: low-latency rate control, no frame reordering,
 /// so each captured frame comes out as soon as it's encoded. Frames are handed over in Annex B form
 /// (start codes; key frames carry SPS and PPS first), which Android's decoder takes as is.
+/// `light` is for a thin link, like a phone on mobile data (see `ScreenCapture.light`).
 final class VideoEncoder {
     static let bitRate = 4_000_000          // average, bits/s: well under what the phone's Wi-Fi carried
     static let peakBytesPerSecond = 700_000  // hard cap, so a burst can't back up the link
+    static let lightBitRate = 1_200_000
+    static let lightPeakBytesPerSecond = 220_000
 
     let width: Int
     let height: Int
+    let light: Bool
     private let session: VTCompressionSession
 
-    init?(width: Int, height: Int) {
+    init?(width: Int, height: Int, light: Bool) {
         self.width = width
         self.height = height
+        self.light = light
         let specification = [kVTVideoEncoderSpecification_EnableLowLatencyRateControl: true] as CFDictionary
         var session: VTCompressionSession?
         let status = VTCompressionSessionCreate(allocator: nil, width: Int32(width), height: Int32(height),
@@ -30,9 +35,9 @@ final class VideoEncoder {
             kVTCompressionPropertyKey_RealTime: true,
             kVTCompressionPropertyKey_ProfileLevel: kVTProfileLevel_H264_ConstrainedHigh_AutoLevel,
             kVTCompressionPropertyKey_AllowFrameReordering: false,
-            kVTCompressionPropertyKey_AverageBitRate: Self.bitRate,
-            kVTCompressionPropertyKey_DataRateLimits: [Self.peakBytesPerSecond, 1] as CFArray,
-            kVTCompressionPropertyKey_ExpectedFrameRate: ScreenCapture.framesPerSecond,
+            kVTCompressionPropertyKey_AverageBitRate: light ? Self.lightBitRate : Self.bitRate,
+            kVTCompressionPropertyKey_DataRateLimits: [light ? Self.lightPeakBytesPerSecond : Self.peakBytesPerSecond, 1] as CFArray,
+            kVTCompressionPropertyKey_ExpectedFrameRate: ScreenCapture.framesPerSecond(light: light),
             kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 2,   // a lost frame heals within 2 s
             kVTCompressionPropertyKey_ColorPrimaries: kCVImageBufferColorPrimaries_ITU_R_709_2,
             kVTCompressionPropertyKey_TransferFunction: kCVImageBufferTransferFunction_ITU_R_709_2,

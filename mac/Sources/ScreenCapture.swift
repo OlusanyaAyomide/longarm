@@ -5,10 +5,10 @@ import ScreenCaptureKit
 /// (`VideoEncoder`). Frames are only encoded and sent while a region is shown. ScreenCaptureKit
 /// only delivers a frame when something in the region changes, so a still screen costs next to
 /// nothing; once it goes still, the last frame is sent again a few times so the encoder can
-/// sharpen it.
+/// sharpen it. While `light`, it sends fewer, smaller, more compressed frames, for a thin link.
 final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
-    static let framesPerSecond: Int32 = 60
-    static let longestSide: CGFloat = 2400   // pixels; Retina detail up to about a phone screen's
+    static func framesPerSecond(light: Bool) -> Int32 { light ? 30 : 60 }
+    static func longestSide(light: Bool) -> CGFloat { light ? 1440 : 2400 }   // pixels; Retina detail up to about a phone screen's
     static let sharpenDelay: TimeInterval = 0.25
     static let sharpenTimes = 3
 
@@ -17,6 +17,8 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     /// Something the owner should know (no permission, capture failed), or nil once it works.
     var onProblem: ((String?) -> Void)?
     private(set) var problem: String?
+    /// The phone is on a thin link (mobile data, see `RemoteControl`).
+    private(set) var light = false
 
     private var running = false
     private var target: ScreenRegion?             // what the stream should capture
@@ -31,7 +33,7 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private var encoder: VideoEncoder?
     private var latest: CVPixelBuffer?
     private var sending: UInt32?
-    private var expected = (width: 0, height: 0)
+    private var expected = (width: 0, height: 0, light: false)
     private var keyFrameNext = true
     private var captured = 0                  // frames from the screen so far, to spot when it goes still
     private var sharpened = 0
@@ -67,6 +69,14 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         shown = nil
         problem = nil   // said again if it still applies next time
         stopStream(done: done)
+    }
+
+    func setLight(_ on: Bool) {
+        guard on != light else { return }
+        DebugLog.write("screen capture: \(on ? "light, for a thin link" : "full quality")")
+        light = on
+        streamArea = nil   // reconfigure, even for the same area
+        sync()
     }
 
     /// Shows [area] on the phone, tagged with [generation], or nothing.
@@ -105,11 +115,12 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
             report("The display for \(area.name) isn't connected")
             return done()
         }
-        let config = Self.configuration(for: area, scale: screen.backingScaleFactor)
+        let light = self.light
+        let config = Self.configuration(for: area, scale: screen.backingScaleFactor, light: light)
         queue.async {
             self.sending = nil
             self.latest = nil
-            self.expected = (config.width, config.height)
+            self.expected = (config.width, config.height, light)
         }
         if let stream, streamDisplay == displayID {
             stream.updateConfiguration(config) { [weak self] error in
@@ -181,13 +192,13 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         onProblem?(problem)
     }
 
-    private static func configuration(for area: ScreenRegion, scale: CGFloat) -> SCStreamConfiguration {
-        let scale = min(scale, longestSide / max(area.rect.width, area.rect.height, 1))
+    private static func configuration(for area: ScreenRegion, scale: CGFloat, light: Bool) -> SCStreamConfiguration {
+        let scale = min(scale, longestSide(light: light) / max(area.rect.width, area.rect.height, 1))
         let config = SCStreamConfiguration()
         config.sourceRect = area.rect
         config.width = Int((area.rect.width * scale / 2).rounded()) * 2   // even, as H.264 decoders like it
         config.height = Int((area.rect.height * scale / 2).rounded()) * 2
-        config.minimumFrameInterval = CMTime(value: 1, timescale: framesPerSecond)
+        config.minimumFrameInterval = CMTime(value: 1, timescale: framesPerSecond(light: light))
         config.showsCursor = true   // so the phone shows what you're pointing at
         config.pixelFormat = kCVPixelFormatType_32BGRA
         config.colorSpaceName = CGColorSpace.sRGB
@@ -241,8 +252,8 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     /// and height (UInt16 each), then the H.264 frame; all numbers big-endian.
     private func encode(_ pixels: CVPixelBuffer) {
         guard let generation = sending else { return }
-        if encoder?.width != expected.width || encoder?.height != expected.height {
-            encoder = VideoEncoder(width: expected.width, height: expected.height)
+        if encoder?.width != expected.width || encoder?.height != expected.height || encoder?.light != expected.light {
+            encoder = VideoEncoder(width: expected.width, height: expected.height, light: expected.light)
             keyFrameNext = true
         }
         guard let encoder else { return }

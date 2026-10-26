@@ -201,7 +201,13 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
             ZoomableScreen(area, zoom, vibrate, onTapOutside = { typing = false })
         } else {
             Text(
-                remote.error ?: if (!remote.allowed) "Turn on Allow Remote Control in the Longarm menu on the Mac" else "Connecting to ${state.macName}…",
+                when {
+                    state.status != MacLink.Status.Connected ->
+                        "Connecting to ${state.macName}${if (state.mode == MacLink.Mode.Internet) " over the internet" else ""}…"
+                    remote.error != null -> remote.error!!
+                    !remote.allowed -> "Turn on Allow Remote Control in the Longarm menu on the Mac"
+                    else -> "Starting…"
+                },
                 color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.Center).padding(48.dp),
             )

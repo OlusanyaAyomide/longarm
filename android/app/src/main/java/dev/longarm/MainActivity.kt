@@ -21,11 +21,18 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -40,8 +47,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,9 +86,19 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme(background = Background, surface = Surface, primary = Accent)) {
                 val state by MacLink.state.collectAsStateWithLifecycle()
                 var controlling by rememberSaveable { mutableStateOf(false) }
+                var askingCode by remember { mutableStateOf(false) }
                 val snackbar = remember { SnackbarHostState() }
                 LaunchedEffect(Unit) { Remote.notices.collect { snackbar.showSnackbar(it) } }
                 BackHandler(enabled = controlling) { controlling = false }
+                // Over the internet, the link lasts as long as remote control is open: leaving it
+                // disconnects, and a refused code (or a restart) comes back here, asking again.
+                LaunchedEffect(controlling) { if (!controlling) MacLink.disconnectInternet() }
+                LaunchedEffect(state.mode, state.status) {
+                    if (state.mode == MacLink.Mode.Internet && state.status == MacLink.Status.Idle && controlling) {
+                        controlling = false
+                        askingCode = state.joinError != null
+                    }
+                }
 
                 Box(Modifier.fillMaxSize().background(Background).systemBarsPadding()) {
                     when {
@@ -84,7 +106,7 @@ class MainActivity : ComponentActivity() {
                         controlling -> RemotePane(state, onExit = { controlling = false }, Modifier.fillMaxSize())
                         else -> HomeScreen(
                             state,
-                            onControl = { controlling = true },
+                            onControl = { if (state.mode == MacLink.Mode.Internet) askingCode = true else controlling = true },
                             onForget = {
                                 MacLink.forget()
                                 LinkService.stop(this@MainActivity)
@@ -93,6 +115,17 @@ class MainActivity : ComponentActivity() {
                     }
                     SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp))
                     if (!controlling) VersionLabel(Modifier.align(Alignment.BottomStart))
+                }
+                if (askingCode) {
+                    JoinCodeDialog(
+                        macName = state.macName, error = state.joinError,
+                        onJoin = { code ->
+                            askingCode = false
+                            MacLink.connectInternet(code)
+                            controlling = true
+                        },
+                        onCancel = { askingCode = false },
+                    )
                 }
                 pendingPairing?.let { pairing ->
                     AlertDialog(
@@ -170,40 +203,91 @@ private fun PairScreen(error: String?, onScan: () -> Unit) {
     }
 }
 
-/** Paired: the Mac's status, and the way in to remote control. */
+/** Paired: how to connect (picked, never guessed), the Mac's status, and the way in to remote control. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: () -> Unit) {
     val remote by Remote.state.collectAsStateWithLifecycle()
     val connected = state.status == MacLink.Status.Connected
+    val internet = state.mode == MacLink.Mode.Internet
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text("Longarm", fontSize = 34.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-        Spacer(Modifier.height(20.dp))
-        Box(Modifier.size(10.dp).background(if (connected) Color(0xFF4ADE80) else LockedAccent, CircleShape))
+        Spacer(Modifier.height(24.dp))
+        SingleChoiceSegmentedButtonRow {
+            listOf(MacLink.Mode.Home to "At home", MacLink.Mode.Internet to "Over the internet").forEachIndexed { index, (mode, label) ->
+                SegmentedButton(
+                    selected = state.mode == mode, onClick = { MacLink.setMode(mode) },
+                    shape = SegmentedButtonDefaults.itemShape(index, 2),
+                ) { Text(label) }
+            }
+        }
+        Spacer(Modifier.height(24.dp))
+        Box(Modifier.size(10.dp).background(if (connected || (internet && state.internet != null)) Color(0xFF4ADE80) else LockedAccent, CircleShape))
         Spacer(Modifier.height(8.dp))
         Text(
-            when (state.status) {
-                MacLink.Status.Connected -> "Connected to ${state.macName} · ${state.via}"
-                MacLink.Status.Searching -> "Looking for ${state.macName}…"
+            when {
+                internet && state.internet == null -> "This phone doesn't know where to find ${state.macName} over the internet yet"
+                internet -> "${state.macName} over Tailscale · ${state.internet}"
+                state.status == MacLink.Status.Connected -> "Connected to ${state.macName} · ${state.via}"
+                state.status == MacLink.Status.Searching -> "Looking for ${state.macName}…"
                 else -> "Connecting to ${state.macName}…"
             },
             color = Body, fontSize = 16.sp, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(32.dp))
         Button(
-            onClick = onControl, enabled = connected,
+            onClick = onControl, enabled = if (internet) state.internet != null else connected,
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Background),
         ) { Text("Control your Mac", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) }
-        if (connected && !remote.allowed) {
+        val hint = when {
+            internet && state.internet == null ->
+                "On the Mac: Longarm menu → Internet, over Tailscale. Then connect at home once, or pair again."
+            internet -> "Tailscale must be on on this phone. You'll be asked for the join code you set on the Mac."
+            connected && !remote.allowed -> "First, on the Mac: Longarm menu → Allow Remote Control"
+            else -> null
+        }
+        if (hint != null) {
             Spacer(Modifier.height(16.dp))
-            Text("First, on the Mac: Longarm menu → Allow Remote Control", color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
+            Text(hint, color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
         }
         Spacer(Modifier.height(40.dp))
         TextButton(onClick = onForget) { Text("Forget this Mac", color = Muted) }
     }
+}
+
+/** Asked every time remote control opens over the internet; never stored. */
+@Composable
+private fun JoinCodeDialog(macName: String, error: String?, onJoin: (String) -> Unit, onCancel: () -> Unit) {
+    var code by remember { mutableStateOf("") }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Join code for $macName") },
+        text = {
+            Column {
+                Text("The code you set in the Longarm menu on the Mac.", color = Muted)
+                Spacer(Modifier.height(16.dp))
+                OutlinedTextField(
+                    value = code, onValueChange = { typed -> code = typed.filter(Char::isDigit).take(12) },
+                    singleLine = true, visualTransformation = PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword, imeAction = ImeAction.Go),
+                    keyboardActions = KeyboardActions(onGo = { if (code.length >= 6) onJoin(code) }),
+                    modifier = Modifier.focusRequester(focus),
+                )
+                if (error != null) {
+                    Spacer(Modifier.height(12.dp))
+                    Text(error, color = LockedAccent, fontSize = 14.sp)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onJoin(code) }, enabled = code.length >= 6) { Text("Connect") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+    )
 }
 
 @Composable
