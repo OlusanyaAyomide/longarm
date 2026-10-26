@@ -1,0 +1,6 @@
+# Caddy gets and renews the TLS certificate for this name by itself. install.sh fills it in.
+LONGARM_DOMAIN {
+	reverse_proxy /v1 127.0.0.1:8080
+	reverse_proxy /health 127.0.0.1:8080
+	respond 404
+}

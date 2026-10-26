@@ -1,0 +1,29 @@
+[Unit]
+Description=Longarm rendezvous (helps a phone and its Mac find each other)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=longarm
+Group=longarm
+WorkingDirectory=/opt/longarm/server
+EnvironmentFile=/etc/longarm/rendezvous.env
+ExecStart=/usr/bin/env node src/main.ts
+Restart=on-failure
+RestartSec=2
+
+# It needs nothing but its own folder and the network.
+MemoryMax=128M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

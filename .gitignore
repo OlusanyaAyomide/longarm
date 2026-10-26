@@ -1,3 +1,5 @@
 .DS_Store
 mac/build/
 mac/icon/*.iconset/
+node_modules/
+deploy/.env
