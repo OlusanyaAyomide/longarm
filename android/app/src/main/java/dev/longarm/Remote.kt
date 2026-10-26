@@ -52,6 +52,10 @@ object Remote {
     private val _dictation = MutableStateFlow(Dictation())
     val dictation: StateFlow<Dictation> = _dictation.asStateFlow()
 
+    /** What's stopping the picture, from the Mac (e.g. no Screen Recording permission), until it shows. */
+    private val _problem = MutableStateFlow<String?>(null)
+    val problem: StateFlow<String?> = _problem.asStateFlow()
+
     /** Short messages for the user (errors from the Mac and the like). */
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val notices: SharedFlow<String> = _notices.asSharedFlow()
@@ -65,7 +69,10 @@ object Remote {
         currentGeneration = { generation },
         onRendered = { rendered ->
             stats.rendered++
-            if (rendered == generation && !_ready.value) _ready.value = true
+            if (rendered == generation && !_ready.value) {
+                _ready.value = true
+                _problem.value = null
+            }
         },
         needKeyFrame = ::requestKeyFrame,
     )
@@ -260,7 +267,10 @@ object Remote {
                     else -> _dictation.value = current.copy(live = message.optString("text"))
                 }
             }
-            "notice" -> notice(message.optString("text"))
+            "notice" -> {
+                notice(message.optString("text"))
+                if (wanted && !_ready.value) _problem.value = message.optString("text")
+            }
         }
     }
 }

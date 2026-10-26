@@ -892,6 +892,7 @@ private fun fingersSpread(event: PointerEvent): Float {
 @Composable
 internal fun ScreenPicture(screen: Remote.Screen?, modifier: Modifier, onBounds: (Rect) -> Unit) {
     val ready by Remote.ready.collectAsStateWithLifecycle()
+    val problem by Remote.problem.collectAsStateWithLifecycle()
     var last by remember { mutableStateOf(screen) }
     if (screen != null) last = screen
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
@@ -906,7 +907,8 @@ internal fun ScreenPicture(screen: Remote.Screen?, modifier: Modifier, onBounds:
         )
         if (screen != null && !ready) {
             Box(fitted.border(2.dp, Accent).background(Accent.copy(alpha = 0.08f)), contentAlignment = Alignment.Center) {
-                Text("Waiting for the picture…", color = Muted, fontSize = 13.sp, textAlign = TextAlign.Center)
+                Text(problem ?: "Waiting for the picture…", color = if (problem != null) LockedAccent else Muted,
+                    fontSize = 13.sp, textAlign = TextAlign.Center, modifier = Modifier.padding(24.dp))
             }
         }
     }
