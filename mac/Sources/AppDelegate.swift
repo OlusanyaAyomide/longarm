@@ -75,6 +75,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             serverError = error.localizedDescription
         }
         refreshIcon()
+        askForPermissions()
         if pairing != nil, UserDefaults.standard.object(forKey: "paired") == nil { showPairWindow() }   // first run
     }
 
@@ -150,6 +151,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         if let problem = share.capture.problem { info("⚠︎ \(problem)") }
         menu.addItem(.separator())
+        // Both are needed before the phone can see and use the Mac.
+        if AXIsProcessTrusted() { info("✓ Accessibility (to click and type)") } else {
+            _ = action("Allow Accessibility… (to click and type)", #selector(openAccessibilitySettings))
+        }
+        if CGPreflightScreenCaptureAccess() { info("✓ Screen Recording (to show the screen)") } else {
+            _ = action("Allow Screen Recording… (to show the screen)", #selector(openScreenRecordingSettings))
+        }
+        menu.addItem(.separator())
         let allow = action("Allow Remote Control", #selector(toggleRemoteAllowed))
         allow.state = remote.allowed ? .on : .off
         _ = action("Deepgram API Key… (dictation)", #selector(setDeepgramKey))
@@ -162,6 +171,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleRemoteAllowed() { remote.allowed.toggle() }
+
+    // MARK: - Permissions
+
+    /// On launch, asks macOS for what remote control needs, so the prompts come up front rather
+    /// than the first time the phone connects. macOS shows each prompt only once; after that the
+    /// menu links to the right Settings page.
+    private func askForPermissions() {
+        if !AXIsProcessTrusted() {
+            _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt": true] as CFDictionary)
+        }
+        if !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+    }
+
+    @objc private func openAccessibilitySettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
+    }
+
+    /// Screen Recording only takes effect after Longarm restarts.
+    @objc private func openScreenRecordingSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+        let alert = NSAlert()
+        alert.messageText = "Turn on Longarm, then reopen it"
+        alert.informativeText = "In Screen & System Audio Recording, turn on Longarm. macOS only lets it see the screen after it restarts: choose Quit Longarm from its menu and open it again."
+        alert.addButton(withTitle: "OK")
+        NSApp.activate()
+        alert.runModal()
+    }
     @objc private func setDeepgramKey() { askForApiKey(Self.deepgramKey) }
 
     private func askForApiKey(_ kind: ApiKeyKind) {
