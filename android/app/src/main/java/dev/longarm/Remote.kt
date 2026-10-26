@@ -114,6 +114,11 @@ object Remote {
         put("button", if (right) "right" else "left").put("count", count)
     }
 
+    /** A right-click wherever the Mac's pointer is now. */
+    fun rightClickHere() {
+        MacLink.send(JSONObject().put("type", "pointer").put("action", "click").put("button", "right").put("count", 1))
+    }
+
     fun drag(action: String, x: Float, y: Float) = sendPointer("drag-$action", x, y) {}
 
     fun scroll(x: Float, y: Float, dx: Float, dy: Float) {

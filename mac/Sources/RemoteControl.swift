@@ -10,7 +10,7 @@ import IOKit.pwr_mgt
 /// minutes without input from it.
 ///
 /// Phone → Mac:  remote {on}, pointer {action: click | drag-start | drag-move | drag-end,
-///               x, y (0…1 of the screen), button: left | right, count}, scroll {x, y, dx, dy in
+///               x, y (0…1 of the screen; left out = where the pointer is), button: left | right, count}, scroll {x, y, dx, dy in
 ///               points}, type {text}, key {key, modifiers: [cmd, shift, option, control]},
 ///               keyframe (the phone's video decoder needs one), dictate {on}, then binary audio:
 ///               0x03 + 16 kHz mono 16-bit PCM
@@ -92,7 +92,8 @@ final class RemoteControl: NSObject {
         }
         switch type {
         case "pointer":
-            guard let point = point(message, in: area) else { break }
+            // No position: right where the Mac's pointer is now (the phone's R button).
+            guard let point = message["x"] == nil ? CGEvent(source: nil)?.location : point(message, in: area) else { break }
             switch message["action"] as? String {
             case "click":
                 DebugLog.write("remote click \(message["button"] as? String ?? "left") ×\(message["count"] as? Int ?? 1)")

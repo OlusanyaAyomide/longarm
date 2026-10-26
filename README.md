@@ -16,7 +16,8 @@ Mac, an Android app on the phone, paired with a QR code, talking directly over y
   |---|---|
   | Tap (quick or slow) | click |
   | Tap twice | double-click |
-  | Two-finger tap, or **R** then tap | right-click |
+  | Two-finger tap | right-click there |
+| **R** button | right-click where the Mac's pointer is |
   | Long-press, then drag | click-and-drag (select text, move windows) |
   | One-finger drag | scroll (moves the view instead when zoomed in) |
   | Two fingers moving together | scroll |

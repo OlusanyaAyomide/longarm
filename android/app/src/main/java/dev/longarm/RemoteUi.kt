@@ -137,7 +137,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  * Remote control: the Mac's whole screen, live and as large as the phone allows (no header, no
  * status or navigation bar; swipe from an edge to see them), with the phone's touches as its pointer.
  *
- *   tap = click · tap twice = double-click · two-finger tap, or R then tap = right-click
+ *   tap = click · tap twice = double-click · two-finger tap = right-click there; R = right-click at the pointer
  *   long-press then drag = click-and-drag (select text, move windows); long-press alone = click
  *   one-finger drag = scroll the Mac, or move the view when zoomed in
  *   two fingers: pinch = zoom, move together = scroll the Mac
@@ -156,7 +156,6 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
     val held = remember { mutableStateListOf<String>() }
     var controls by remember { mutableStateOf(true) }
     var typing by remember { mutableStateOf(false) }
-    var rightNext by remember { mutableStateOf(false) }   // the R button: the next tap is a right-click
     var landscape by remember { mutableStateOf(Remote.landscape) }
     val zoom = remember { ZoomState() }
     val dictation by Remote.dictation.collectAsStateWithLifecycle()
@@ -199,8 +198,7 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
 
     Box(modifier.background(Color.Black).clipToBounds()) {
         if (area != null) {
-            ZoomableScreen(area, zoom, vibrate, rightClickNext = { rightNext }, onRightClicked = { rightNext = false },
-                onTapOutside = { typing = false })
+            ZoomableScreen(area, zoom, vibrate, onTapOutside = { typing = false })
         } else {
             Text(
                 remote.error ?: if (!remote.allowed) "Turn on Allow Remote Control in the Longarm menu on the Mac" else "Connecting to ${state.macName}…",
@@ -221,7 +219,7 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
                                 if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                         }
                         RailButton("⌨", "Keyboard", active = typing) { typing = !typing }
-                        RailButton("R", "Right-click the next tap", active = rightNext) { vibrate(); rightNext = !rightNext }
+                        RailButton("R", "Right-click where the pointer is") { vibrate(); Remote.rightClickHere() }
                         // Getting out of a full-screen app: Mission Control, the Spaces either side, leave full screen.
                         RailButton("▦", "Mission Control") { press("up", "control") }
                         RailButton("◀", "Space to the left") { press("left", "control") }
@@ -326,7 +324,7 @@ private class ZoomState {
 @Composable
 private fun ZoomableScreen(
     area: Remote.Screen, zoom: ZoomState, vibrate: () -> Unit,
-    rightClickNext: () -> Boolean, onRightClicked: () -> Unit, onTapOutside: () -> Unit,
+    onTapOutside: () -> Unit,
 ) {
     var size by zoom::size
     var scale by zoom::scale
@@ -484,11 +482,7 @@ private fun ZoomableScreen(
                         if (pressed.isEmpty()) {   // lifted
                             val point = toMac(start)
                             when (mode) {
-                                Gesture.Pending, Gesture.LongPress -> if (onMac(point) && rightClickNext()) {
-                                    vibrate()
-                                    Remote.click(point.x, point.y, right = true)
-                                    onRightClicked()
-                                } else if (mode == Gesture.LongPress) {
+                                Gesture.Pending, Gesture.LongPress -> if (mode == Gesture.LongPress) {
                                     // Held but not dragged: still just a click, so a slow tap never becomes a right-click.
                                     if (onMac(point)) Remote.click(point.x, point.y)
                                 } else if (onMac(point)) {
