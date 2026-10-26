@@ -40,6 +40,7 @@ final class MacInput: InputInjector {
         guard let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                   wheel1: Int32(clamping: dy), wheel2: Int32(clamping: dx), wheel3: 0) else { return }
         event.location = point
+        event.flags = []   // see post(mouse:)
         mark(event).post(tap: .cghidEventTap)
     }
 
@@ -76,6 +77,9 @@ final class MacInput: InputInjector {
     private func post(mouse type: CGEventType, at point: CGPoint, button: CGMouseButton, clicks: Int = 1) {
         guard let event = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: point, mouseButton: button) else { return }
         event.setIntegerValueField(.mouseEventClickState, value: Int64(clicks))
+        // A new event takes the modifiers the source last saw, and Control from an earlier ⌃← or ⌃↑
+        // would turn every click into a right-click (Control-click). Clicks carry no modifiers.
+        event.flags = []
         mark(event).post(tap: .cghidEventTap)
     }
 
