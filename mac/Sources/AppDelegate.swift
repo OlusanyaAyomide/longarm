@@ -3,11 +3,10 @@ import CoreImage
 
 /// Menu bar app: the phone link, the screen it's shown, and remote control. Off until the owner
 /// allows remote control from the menu; the icon turns orange and says "Remote" while it's on.
-/// The menu also switches each way of connecting on or off: home Wi-Fi, and the internet over
-/// Tailscale with a join code.
+/// The menu also switches each way of connecting on or off: home Wi-Fi (`LinkServer`), and the
+/// internet (`InternetLink`, through a rendezvous server, with a join code).
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     static let port: UInt16 = 47900
-    static let internetPort: UInt16 = 47901
 
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     private let share = ScreenShare()
@@ -16,10 +15,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pairing: Pairing?
     private var server: LinkServer?
     private var serverError: String?
-    private var listenerProblems: [LinkServer.Network: String] = [:]
+    private var listenerProblem: String?
     private let joinCode = JoinCode()
-    private var tailscaleWatch: Timer?
-    private var phones: [String] = []
+    private let pairedPhones = PairedPhones()
+    private var deviceKey: DeviceKey?
+    private var rendezvous: RendezvousClient?
+    private var internet: InternetLink?
+    private var homePhones: [String] = []
+    private var internetPhones: [String] = []
+    private var phones: [String] { homePhones + internetPhones }
     private var pairWindow: NSWindow?
     private var quitSignal: DispatchSourceSignal?
 
@@ -44,40 +48,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         share.onChange = { [weak self] in
             guard let self else { return }
-            self.server?.broadcast(self.share.message())
+            self.broadcast(self.share.message())
         }
         share.capture.onFrame = { [weak self] frame, keyFrame in
             guard let self, let server = self.server else { return }
             if server.broadcastFrame(frame, keyFrame: keyFrame) { self.share.capture.requestKeyFrame() }
         }
+        share.capture.onPixels = { [weak self] pixels in self?.internet?.deliver(pixels) }
         share.capture.onProblem = { [weak self] problem in
-            if let problem { self?.server?.broadcast(["type": "notice", "text": problem]) }
+            if let problem { self?.broadcast(["type": "notice", "text": problem]) }
         }
-        remote.broadcast = { [weak self] message in self?.server?.broadcast(message) }
+        remote.broadcast = { [weak self] message in self?.broadcast(message) }
         remote.onChange = { [weak self] in self?.refreshIcon() }
 
         do {
             let pairing = try Pairing()
-            let server = LinkServer(ports: [.home: Self.port, .internet: Self.internetPort],
-                                    pairing: pairing, joinCode: joinCode, macName: macName)
-            server.greeting = { [weak self] in
-                guard let self else { return [] }
-                return [self.remote.stateMessage(), self.share.message()]
-            }
+            let server = LinkServer(port: Self.port, pairing: pairing, macName: macName)
+            server.greeting = { [weak self] in self?.greeting() ?? [] }
             server.onMessage = { [weak self] message, reply in self?.remote.handle(message, reply: reply) ?? false }
             server.onBinary = { [weak self] data in self?.remote.audio(data) }
             server.onPhonesChanged = { [weak self] names in
-                self?.phones = names
-                if names.isEmpty { self?.remote.stop(because: nil) }
+                self?.homePhones = names
+                self?.phonesChanged()
+            }
+            server.onListenerProblem = { [weak self] problem in
+                self?.listenerProblem = problem
                 self?.refreshIcon()
             }
-            server.onListenerProblem = { [weak self] network, problem in
-                self?.listenerProblems[network] = problem
-                self?.refreshIcon()
-            }
-            try server.setHome(homeOn)
+            server.helloExtras = { [weak self] in self?.internetDetails() ?? [:] }
+            server.onPhoneKey = { [weak self] key, name in self?.pairedPhones.add(key: key, name: name) }
+            try server.setListening(homeOn)
             self.pairing = pairing
             self.server = server
+            setUpInternet(pairing: pairing)
         } catch {
             serverError = error.localizedDescription
         }
@@ -85,6 +88,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshIcon()
         askForPermissions()
         if pairing != nil, UserDefaults.standard.object(forKey: "paired") == nil { showPairWindow() }   // first run
+    }
+
+    /// The internet side: this Mac's key, its rendezvous server connection, and WebRTC sessions.
+    private func setUpInternet(pairing: Pairing) {
+        guard let deviceKey = try? DeviceKey() else {
+            DebugLog.write("internet: couldn't make this Mac's key; internet connections are unavailable")
+            return
+        }
+        let rendezvous = RendezvousClient(key: deviceKey, allowed: { [weak self] in self?.pairedPhones.ids ?? [] })
+        rendezvous.onStatus = { [weak self] _ in self?.refreshIcon() }
+        let internet = InternetLink(key: deviceKey, pairedPhones: pairedPhones, joinCode: joinCode, rendezvous: rendezvous)
+        internet.macName = macName
+        internet.macId = pairing.macId
+        internet.greeting = { [weak self] in self?.greeting() ?? [] }
+        internet.onMessage = { [weak self] message, reply in self?.remote.handle(message, reply: reply) ?? false }
+        internet.onBinary = { [weak self] data in self?.remote.audio(data) }
+        internet.onPhonesChanged = { [weak self] names in
+            self?.internetPhones = names
+            self?.phonesChanged()
+        }
+        rendezvous.onSignal = { [weak internet] from, data in internet?.handleSignal(from: from, data: data) }
+        pairedPhones.onChange = { [weak rendezvous] in rendezvous?.updateAllowList() }
+        self.deviceKey = deviceKey
+        self.rendezvous = rendezvous
+        self.internet = internet
+    }
+
+    private func greeting() -> [[String: Any]] {
+        [remote.stateMessage(), share.message()]
+    }
+
+    private func broadcast(_ message: [String: Any]) {
+        server?.broadcast(message)
+        internet?.broadcast(message)
+    }
+
+    private func phonesChanged() {
+        if phones.isEmpty { remote.stop(because: nil) }
+        share.capture.encodesFrames = !homePhones.isEmpty   // internet phones get the screen from WebRTC
+        refreshIcon()
     }
 
     /// Stops screen capture before quitting (up to 1 s), or macOS keeps showing Longarm as sharing.
@@ -135,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         statusItem.length = NSStatusItem.squareLength
         button.title = ""
-        let symbol = serverError != nil || !listenerProblems.isEmpty ? "exclamationmark.triangle" : "iphone"
+        let symbol = serverError != nil || listenerProblem != nil ? "exclamationmark.triangle" : "iphone"
         button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: "Longarm")
         button.image?.isTemplate = true
         button.contentTintColor = nil
@@ -164,22 +207,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let home = action("Home Wi-Fi (or USB)", #selector(toggleHome))
         home.state = homeOn ? .on : .off
         home.indentationLevel = 1
-        if let problem = listenerProblems[.home] { info("    ⚠︎ \(problem)") }
-        let internet = action("Internet, over Tailscale", #selector(toggleInternet))
+        if let listenerProblem { info("    ⚠︎ \(listenerProblem)") }
+        let internet = action("Internet", #selector(toggleInternet))
         internet.state = internetOn ? .on : .off
         internet.indentationLevel = 1
         if internetOn {
             if let lockedUntil = joinCode.lockedUntil {
                 info("    ⚠︎ Locked after wrong codes, until \(lockedUntil.formatted(date: .omitted, time: .shortened))")
             }
-            if let problem = listenerProblems[.internet] {
-                info("    ⚠︎ \(problem)")
-            } else if let address = server?.internet?.host {
-                info("    \(address) · the phone needs your join code")
-            } else {
-                info("    ⚠︎ Tailscale isn't connected on this Mac")
+            switch rendezvous?.status ?? .off {
+            case .online: info("    Ready · the phone needs your join code")
+            case .connecting: info("    Connecting to \(rendezvousURL?.host ?? "the server")…")
+            case .failed(let reason): info("    ⚠︎ \(reason), trying again")
+            case .off: info(rendezvousURL == nil ? "    ⚠︎ Choose the internet server" : "    ⚠︎ Unavailable on this Mac")
             }
+            if pairedPhones.phones.isEmpty { info("    ⚠︎ Connect your phone at home once first") }
         }
+        action("Internet Server…", #selector(setRendezvousServer)).indentationLevel = 1
         action(joinCode.isSet ? "Change Join Code…" : "Set Join Code…", #selector(setJoinCode)).indentationLevel = 1
         menu.addItem(.separator())
         // Both are needed before the phone can see and use the Mac.
@@ -217,7 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleHome() {
         homeOn.toggle()
-        do { try server?.setHome(homeOn) } catch { listenerProblems[.home] = error.localizedDescription }
+        do { try server?.setListening(homeOn) } catch { listenerProblem = error.localizedDescription }
         refreshIcon()
     }
 
@@ -225,41 +269,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !internetOn {
             if !joinCode.isSet { askForJoinCode() }
             guard joinCode.isSet else { return }
-            if Tailscale.address() == nil { explainTailscale() }
+            if rendezvousURL == nil { askForRendezvousServer() }
+            guard rendezvousURL != nil else { return }
         }
         internetOn.toggle()
         refreshInternet()
     }
 
-    /// Listens on the Tailscale address while internet connections are on, following it as Tailscale
-    /// connects, disconnects or changes it.
+    /// Signed in to the rendezvous server only while internet connections are on.
     private func refreshInternet() {
-        let host = internetOn ? Tailscale.address() : nil
-        if host != server?.internet?.host {
-            DebugLog.write(host.map { "internet connections: listening on \($0)" } ?? "internet connections: off")
-            do { try server?.setInternet(host: host) } catch { listenerProblems[.internet] = error.localizedDescription }
-        }
-        if internetOn, tailscaleWatch == nil {
-            tailscaleWatch = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.refreshInternet() }
-        } else if !internetOn {
-            tailscaleWatch?.invalidate()
-            tailscaleWatch = nil
+        if internetOn, let url = rendezvousURL {
+            rendezvous?.start(url: url)
+        } else {
+            rendezvous?.stop()
+            internet?.disconnectAll()
         }
         refreshIcon()
     }
 
-    private func explainTailscale() {
-        let alert = NSAlert()
-        alert.messageText = "Longarm reaches your Mac over Tailscale"
-        alert.informativeText = """
-            Tailscale is a free private network between your own devices, so the Mac never has to be \
-            open to the whole internet. Install it on this Mac and on your phone, and sign in to the same \
-            account on both. Longarm starts listening as soon as Tailscale connects.
-            """
-        alert.addButton(withTitle: "Get Tailscale")
-        alert.addButton(withTitle: "Later")
-        NSApp.activate()
-        if alert.runModal() == .alertFirstButtonReturn { NSWorkspace.shared.open(URL(string: "https://tailscale.com/download")!) }
+    /// The rendezvous server (see `server/` and `deploy/` in the repository), e.g. wss://longarm.example.com/v1.
+    private var rendezvousURL: URL? {
+        get { UserDefaults.standard.string(forKey: "rendezvousURL").flatMap(URL.init(string:)) }
+        set { UserDefaults.standard.set(newValue?.absoluteString, forKey: "rendezvousURL") }
+    }
+
+    /// What a phone at home needs to connect over the internet later: this Mac's key and server.
+    private func internetDetails() -> [String: Any] {
+        guard let deviceKey else { return [:] }
+        return ["key": deviceKey.publicKey.base64EncodedString(), "rendezvous": rendezvousURL?.absoluteString ?? NSNull()]
+    }
+
+    @objc private func setRendezvousServer() { askForRendezvousServer() }
+
+    private func askForRendezvousServer() {
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+        field.placeholderString = "wss://longarm.example.com/v1"
+        field.stringValue = rendezvousURL?.absoluteString ?? ""
+        var problem: String?
+        while true {
+            let alert = NSAlert()
+            alert.messageText = "Internet server"
+            alert.informativeText = (problem.map { "⚠︎ \($0)\n\n" } ?? "")
+                + "The rendezvous server your phone and this Mac use to find each other over the internet "
+                + "(set one up with deploy/ in Longarm's repository). It never sees your screen or what you type."
+            alert.accessoryView = field
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Cancel")
+            alert.window.initialFirstResponder = field
+            NSApp.activate()
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            let text = field.stringValue.trimmingCharacters(in: .whitespaces)
+            guard let url = URL(string: text), ["wss", "ws"].contains(url.scheme), url.host != nil else {
+                problem = "Use a wss:// address, like wss://longarm.example.com/v1."
+                continue
+            }
+            rendezvousURL = url
+            server?.broadcast(["type": "internet"].merging(internetDetails()) { $1 })
+            if internetOn { refreshInternet() }
+            return
+        }
     }
 
     @objc private func setJoinCode() { askForJoinCode() }
@@ -293,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 problem = "The two codes don't match."
             } else {
                 joinCode.set(code.stringValue)
-                server?.disconnect(.internet)
+                internet?.disconnectAll()
                 return
             }
             again.stringValue = ""
@@ -409,12 +477,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         try? pairing?.resetToken()
         joinCode.cancelTickets()
+        pairedPhones.forgetAll()
         server?.disconnectAll()
+        internet?.disconnectAll()
         if pairWindow?.isVisible == true { showPairWindow() }
     }
 
     private func pairingLink() -> String? {
-        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, internet: server?.internet, macName: macName)
+        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, macName: macName)
     }
 
     @objc private func showPairWindow() {
@@ -429,7 +499,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             \(macName) · \(Self.primaryIPv4() ?? "no Wi-Fi address"):\(Self.port)
             Phone and Mac on the same Wi-Fi, or over USB with:
             adb reverse tcp:\(Self.port) tcp:\(Self.port)
-            \(server?.internet.map { "Over the internet: Tailscale, \($0.host):\($0.port)" } ?? "")
             """)
         detail.alignment = .center
         detail.textColor = .secondaryLabelColor

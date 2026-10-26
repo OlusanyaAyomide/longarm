@@ -12,9 +12,10 @@ data class Pairing(
     val fingerprint: String,
     val macId: String,
     val macName: String,
-    /** The Mac's Tailscale address, once it has internet connections on (see [MacLink.Mode]). */
-    val internetHost: String? = null,
-    val internetPort: Int? = null,
+    /** For internet connections, learned over the home link: the Mac's public key (SPKI DER,
+     *  base64; see [DeviceKey]) and its rendezvous server. */
+    val macKey: String? = null,
+    val rendezvous: String? = null,
 ) {
     companion object {
         fun parse(link: String): Pairing? {
@@ -27,8 +28,6 @@ data class Pairing(
                 fingerprint = uri.getQueryParameter("f")?.lowercase()?.takeIf { it.length == 64 } ?: return null,
                 macId = uri.getQueryParameter("id") ?: return null,
                 macName = uri.getQueryParameter("n") ?: "Mac",
-                internetHost = uri.getQueryParameter("ih"),
-                internetPort = uri.getQueryParameter("ip")?.toIntOrNull(),
             )
         }
     }
@@ -45,8 +44,8 @@ class PairingStore(context: Context) {
             fingerprint = prefs.getString("fingerprint", null) ?: return null,
             macId = prefs.getString("macId", null) ?: return null,
             macName = prefs.getString("macName", null) ?: "Mac",
-            internetHost = prefs.getString("internetHost", null),
-            internetPort = prefs.getInt("internetPort", 0).takeIf { it > 0 },
+            macKey = prefs.getString("macKey", null),
+            rendezvous = prefs.getString("rendezvous", null),
         )
     }
 
@@ -58,8 +57,8 @@ class PairingStore(context: Context) {
             .putString("fingerprint", pairing.fingerprint)
             .putString("macId", pairing.macId)
             .putString("macName", pairing.macName)
-            .putString("internetHost", pairing.internetHost)
-            .putInt("internetPort", pairing.internetPort ?: 0)
+            .putString("macKey", pairing.macKey)
+            .putString("rendezvous", pairing.rendezvous)
             .apply()
     }
 

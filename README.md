@@ -38,25 +38,25 @@ You choose how the phone connects, on both ends; it never falls back from one to
 
 - **At home:** phone and Mac on the same Wi-Fi (or USB with `adb reverse`). Switched on in the
   Mac's menu under *Connect from → Home Wi-Fi*, and picked on the phone with **At home**.
-- **Over the internet:** through [Tailscale](https://tailscale.com), a free private network
-  between your own devices, so the Mac is never open to the whole internet. Install it on the
-  Mac and the phone, signed in to the same account. On the Mac, turn on *Connect from → Internet,
-  over Tailscale* and choose a **join code** (6–12 digits). On the phone, pick **Over the
-  internet**; it asks for the code each time you open remote control. Off Wi-Fi, the picture
-  drops to 30 fps and a lower resolution to spare your data.
-
-The phone learns the Mac's Tailscale address once it connects at home (or from a fresh pairing
-code). To try internet connections without Tailscale, point them at another address with
-`defaults write dev.longarm.mac internetHost <address>`.
+- **Over the internet:** WebRTC between the phone and the Mac, directly when the two networks
+  allow it, otherwise through a TURN relay, end-to-end encrypted either way. They find each other
+  through a small rendezvous server you run yourself (`server/`, installed on any VM with
+  `deploy/`). On the Mac choose *Internet Server…* and turn on *Internet*, with a **join code**
+  (6–12 digits). Connect the phone at home once so it learns the Mac's key and server, then pick
+  **Internet** on it. It asks for the code, and again only after 10 minutes away.
 
 ## Safety
 
 - Remote control is **off until you allow it** in the Mac's menu (Allow Remote Control).
 - Only a phone that scanned the Mac's QR code can connect: a random token, and the phone pins the
   Mac's self-signed TLS certificate. Reset Pairing in the menu revokes every phone.
-- Over the internet, the phone also needs the join code. The Mac keeps only a salted PBKDF2 hash
-  of it in the Keychain; five wrong codes in a row lock internet joins for 15 minutes. The internet
-  listener runs only on the Tailscale address, and the home one turns away Tailscale connections.
+- Over the internet, every connection offer is signed with keys the phone and Mac swapped at home
+  (the Mac's in its Secure Enclave, the phone's in the Android Keystore), so the rendezvous server
+  can pass them along but can't read, forge or redirect them; it never sees the screen or input.
+- The phone also needs the join code. The Mac keeps only a salted PBKDF2 hash of it in the
+  Keychain; five wrong codes in a row lock internet joins for 15 minutes. After the right code
+  the phone holds a ticket that the Mac honours until it goes 10 minutes unused.
+- The home listener only accepts connections from the Mac's own network, not over a VPN.
 - While a phone is in control, the Mac's menu bar shows an orange **Remote** (Stop is in its
   menu), and a notice appears on screen when it starts.
 - It stops when the phone disconnects and after 10 minutes without input. The Mac's display and
@@ -103,11 +103,15 @@ Phone (Kotlin, Compose)                          Mac (Swift, menu bar)
   PhoneMic ──────────── PCM ────────────▶  PhoneDictation ─▶ SpeechEngine (Deepgram)
 ```
 
-One TLS WebSocket (port 47900 at home, found over Bonjour as `_longarm._tcp`; 47901 on the
-Tailscale address) carries JSON messages and
+At home, one TLS WebSocket (port 47900, found over Bonjour as `_longarm._tcp`) carries JSON messages and
 binary frames; the full list is at the top of `mac/Sources/RemoteControl.swift`. Video keeps the
 latency low: the encoder never reorders frames, a busy link skips ahead to the next key frame
 instead of queueing, and a still screen is re-sent a few times so text sharpens.
+
+Over the internet the same messages go over a WebRTC data channel and the screen is a WebRTC
+video track (`InternetLink` on both sides), set up through the rendezvous server
+(`RendezvousClient` on the Mac). WebRTC is Google's, as built by LiveKit: `mac/fetch-webrtc.sh`
+downloads it (checksum-verified) on the first Mac build, and Gradle fetches it for the phone.
 
 The parts are behind small interfaces so they can be swapped: `InputInjector` (how input is
 delivered), `StreamingTranscriber` / `SpeechEngine` (speech-to-text).

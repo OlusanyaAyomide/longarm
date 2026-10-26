@@ -14,6 +14,11 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
 
     /// A frame for the phone and whether it's a key frame (see `LinkServer.broadcastFrame`), on the main queue.
     var onFrame: ((Data, Bool) -> Void)?
+    /// Each captured frame while one is shown, unencoded, on the capture queue: for WebRTC
+    /// (`InternetLink`), which encodes for itself.
+    var onPixels: ((CVPixelBuffer) -> Void)?
+    /// Whether to encode frames for `onFrame` (only home phones use them). Set on the main queue.
+    var encodesFrames = true
     /// Something the owner should know (no permission, capture failed), or nil once it works.
     var onProblem: ((String?) -> Void)?
     private(set) var problem: String?
@@ -231,7 +236,10 @@ final class ScreenCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         captured += 1
         sharpened = 0
         stats.captured += 1
-        if sending != nil { encode(pixels) }
+        if sending != nil {
+            onPixels?(pixels)
+            if encodesFrames { encode(pixels) }
+        }
         logStats()
     }
 

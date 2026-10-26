@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug builds only: lets the app reach a rendezvous server on the local network over plain
+     ws://, for testing before one is deployed with TLS. Release builds allow wss:// only. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

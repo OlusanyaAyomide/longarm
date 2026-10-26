@@ -62,6 +62,10 @@ object Remote {
     private val _problem = MutableStateFlow<String?>(null)
     val problem: StateFlow<String?> = _problem.asStateFlow()
 
+    /** Over the internet: whether the connection goes through the relay (true) or directly. */
+    private val _relayed = MutableStateFlow<Boolean?>(null)
+    val relayed: StateFlow<Boolean?> = _relayed.asStateFlow()
+
     /** Short messages for the user (errors from the Mac and the like). */
     private val _notices = MutableSharedFlow<String>(extraBufferCapacity = 4)
     val notices: SharedFlow<String> = _notices.asSharedFlow()
@@ -89,9 +93,18 @@ object Remote {
     fun init(context: Context) {
         prefs = context.getSharedPreferences("remote", Context.MODE_PRIVATE)
         val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
-        context.getSystemService(ConnectivityManager::class.java).registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        connectivity.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) { if (wifi.add(network) && wifi.size == 1) sendQuality() }
             override fun onLost(network: Network) { if (wifi.remove(network) && wifi.isEmpty()) sendQuality() }
+        }, Handler(Looper.getMainLooper()))
+        // Over the internet, a new network means new paths to the Mac: look for them at once.
+        connectivity.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
+            private var current: Network? = null
+            override fun onAvailable(network: Network) {
+                if (current != null && network != current) InternetLink.networkChanged()
+                current = network
+            }
         }, Handler(Looper.getMainLooper()))
     }
 
@@ -195,8 +208,25 @@ object Remote {
 
     // MARK: video
 
-    /** The screen view's texture, which the decoder draws on (null when it goes away). */
-    fun setTexture(texture: SurfaceTexture?) = decoder.setTexture(texture)
+    /**
+     * The screen view's texture (null when it goes away): the decoder draws on it at home,
+     * WebRTC over the internet. Whichever has it releases it when done.
+     */
+    fun setTexture(texture: SurfaceTexture?) {
+        if (MacLink.state.value.mode == MacLink.Mode.Internet) InternetLink.setTexture(texture) else decoder.setTexture(texture)
+    }
+
+    /** Over the internet: a frame of the screen was drawn. */
+    fun onPictureShown() {
+        if (_screen.value != null && !_ready.value) {
+            _ready.value = true
+            _problem.value = null
+        }
+    }
+
+    fun setPath(relay: Boolean) {
+        _relayed.value = relay
+    }
 
     private fun requestKeyFrame() {
         val now = SystemClock.elapsedRealtime()
@@ -248,6 +278,7 @@ object Remote {
     fun onDisconnected() {
         PhoneMic.stop()
         _dictation.value = Dictation()
+        _relayed.value = null
         show(null, -1)
     }
 

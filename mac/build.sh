@@ -11,14 +11,22 @@ rm -f "$APP/Contents/MacOS/Longarm"
 cp Info.plist "$APP/Contents/Info.plist"
 cp icon/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"   # redraw with: swift icon/make-icon.swift
 
+# WebRTC (internet connections) is a prebuilt framework, fetched once into vendor/ and copied into the app.
+./fetch-webrtc.sh
+WEBRTC=vendor/LiveKitWebRTC.xcframework/macos-arm64_x86_64
+mkdir -p "$APP/Contents/Frameworks"
+rsync -a --delete "$WEBRTC/LiveKitWebRTC.framework" "$APP/Contents/Frameworks/"
+
 swiftc -O -swift-version 5 -target arm64-apple-macos15 \
     -framework AppKit -framework Network -framework CoreImage -framework ScreenCaptureKit \
     -framework VideoToolbox -framework CoreMedia -framework IOKit \
+    -F "$WEBRTC" -framework LiveKitWebRTC -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
     Sources/*.swift -o "$APP/Contents/MacOS/Longarm"
 
 # A stable signing identity keeps the Accessibility and Screen Recording grants across rebuilds.
 # Override with LONGARM_SIGN_IDENTITY; falls back to ad-hoc (permissions reset on each build).
 IDENTITY="${LONGARM_SIGN_IDENTITY:-$(security find-identity -v -p codesigning | awk -F'"' '/Apple Development|Developer ID Application/ {print $2; exit}')}"
+codesign --force --sign "${IDENTITY:--}" "$APP/Contents/Frameworks/LiveKitWebRTC.framework"
 codesign --force --sign "${IDENTITY:--}" "$APP"
 echo "Built $APP (signed: ${IDENTITY:-ad-hoc})"
 

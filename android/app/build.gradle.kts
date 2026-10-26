@@ -22,6 +22,8 @@ android {
         targetSdk = 36
         versionCode = Duration.between(LocalDateTime.of(2026, 1, 1, 0, 0), buildTime).toMinutes().toInt()
         versionName = "0.1.0"
+        // WebRTC's native code for phones (and the x86_64 emulator); 32-bit x86 isn't worth the size.
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         buildConfigField(
             "String", "BUILD_TIME",
             "\"${buildTime.format(DateTimeFormatter.ofPattern("d MMM HH:mm", Locale.ENGLISH))}\"",
@@ -51,6 +53,7 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.material3:material3")
+    implementation("io.github.webrtc-sdk:android:150.7871.01")   // Google's WebRTC, as built by LiveKit
     implementation("androidx.activity:activity-compose:1.9.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.core:core-ktx:1.15.0")

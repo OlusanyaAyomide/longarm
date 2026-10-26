@@ -52,10 +52,34 @@ final class JoinCode {
         cancelTickets()
     }
 
+    enum Outcome {
+        case admitted(ticket: String)
+        case refused(String, needsCode: Bool)   // needsCode: the ticket ran out, which isn't a wrong code
+    }
+
+    /// A phone joining over the internet, with the code you typed or its ticket from last time.
+    func attempt(code: String?, ticket: String?) -> Outcome {
+        if let ticket, code == nil {
+            return admits(ticket: ticket)
+                ? .admitted(ticket: ticket)
+                : .refused("It's been more than 10 minutes. Enter the join code again.", needsCode: true)
+        }
+        switch check(code ?? "") {
+        case .accepted:
+            return .admitted(ticket: issueTicket())
+        case .wrong(let triesLeft):
+            return .refused("Wrong code. \(triesLeft) \(triesLeft == 1 ? "try" : "tries") left before joining locks for 15 minutes.", needsCode: false)
+        case .locked(let until):
+            return .refused("Too many wrong codes. Try again after \(until.formatted(date: .omitted, time: .shortened)).", needsCode: false)
+        case .notSet:
+            return .refused("No join code is set on the Mac.", needsCode: false)
+        }
+    }
+
     // MARK: - Tickets
 
     /// A new ticket for a phone that just gave the right code.
-    func issueTicket() -> String {
+    private func issueTicket() -> String {
         let ticket = SymmetricKey(size: .bits256).withUnsafeBytes { Data($0) }.hex
         tickets[Self.digest(ticket)] = Date()
         return ticket

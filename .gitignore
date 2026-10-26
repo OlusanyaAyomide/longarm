@@ -3,3 +3,4 @@ mac/build/
 mac/icon/*.iconset/
 node_modules/
 deploy/.env
+mac/vendor/

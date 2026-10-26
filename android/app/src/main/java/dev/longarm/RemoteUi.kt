@@ -95,6 +95,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.TextButton
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -196,9 +197,16 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
         held.clear()
     }
 
+    val relayed by Remote.relayed.collectAsStateWithLifecycle()
     Box(modifier.background(Color.Black).clipToBounds()) {
         if (area != null) {
             ZoomableScreen(area, zoom, vibrate, onTapOutside = { typing = false })
+        } else if (state.problem != null) {   // over the internet, given up: say why, and offer another go
+            Column(Modifier.align(Alignment.Center).padding(48.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(state.problem, color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center)
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = MacLink::retryInternet) { Text("Try again", color = Accent) }
+            }
         } else {
             Text(
                 when {
@@ -211,6 +219,17 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
                 color = Muted, fontSize = 14.sp, textAlign = TextAlign.Center,
                 modifier = Modifier.align(Alignment.Center).padding(48.dp),
             )
+        }
+        // Over the internet: the last picture stays while it reconnects, and the path shows while it's up.
+        val pill = when {
+            area != null && state.status != MacLink.Status.Connected -> "Reconnecting…"
+            controls && state.mode == MacLink.Mode.Internet && relayed != null -> if (relayed == true) "Relay" else "Direct"
+            else -> null
+        }
+        if (pill != null) {
+            Text(pill, color = Color.White, fontSize = 12.sp,
+                modifier = Modifier.align(Alignment.TopCenter).padding(top = 8.dp)
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(50)).padding(horizontal = 10.dp, vertical = 4.dp))
         }
         // The controls sit above the keyboard; empty space lets touches through to the picture.
         Column(Modifier.fillMaxSize()) {

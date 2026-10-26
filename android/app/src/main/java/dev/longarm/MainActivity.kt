@@ -12,6 +12,21 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.semantics.Role
+import kotlin.math.sqrt
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,12 +42,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -91,12 +102,12 @@ class MainActivity : ComponentActivity() {
                 LaunchedEffect(Unit) { Remote.notices.collect { snackbar.showSnackbar(it) } }
                 BackHandler(enabled = controlling) { controlling = false }
                 // Over the internet, the link lasts as long as remote control is open: leaving it
-                // disconnects, and a refused code (or a restart) comes back here, asking again.
+                // disconnects, and a refused code comes back here, asking for it.
                 LaunchedEffect(controlling) { if (!controlling) MacLink.disconnectInternet() }
-                LaunchedEffect(state.mode, state.status) {
-                    if (state.mode == MacLink.Mode.Internet && state.status == MacLink.Status.Idle && controlling) {
+                LaunchedEffect(state.joinError) {
+                    if (state.mode == MacLink.Mode.Internet && state.joinError != null && controlling) {
                         controlling = false
-                        askingCode = state.joinError != null
+                        askingCode = true
                     }
                 }
 
@@ -110,7 +121,7 @@ class MainActivity : ComponentActivity() {
                                 if (state.mode == MacLink.Mode.Internet && !MacLink.hasTicket) {
                                     askingCode = true
                                 } else {
-                                    MacLink.connectInternet(code = null)   // over the internet: on last time's ticket
+                                    if (state.mode == MacLink.Mode.Internet) MacLink.connectInternet(code = null)   // on last time's ticket
                                     controlling = true
                                 }
                             },
@@ -211,7 +222,6 @@ private fun PairScreen(error: String?, onScan: () -> Unit) {
 }
 
 /** Paired: how to connect (picked, never guessed), the Mac's status, and the way in to remote control. */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: () -> Unit) {
     val remote by Remote.state.collectAsStateWithLifecycle()
@@ -224,21 +234,14 @@ private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: ()
     ) {
         Text("Longarm", fontSize = 34.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
         Spacer(Modifier.height(24.dp))
-        SingleChoiceSegmentedButtonRow {
-            listOf(MacLink.Mode.Home to "At home", MacLink.Mode.Internet to "Over the internet").forEachIndexed { index, (mode, label) ->
-                SegmentedButton(
-                    selected = state.mode == mode, onClick = { MacLink.setMode(mode) },
-                    shape = SegmentedButtonDefaults.itemShape(index, 2),
-                ) { Text(label) }
-            }
-        }
+        ModePicker(state.mode, onSelect = MacLink::setMode)
         Spacer(Modifier.height(24.dp))
         Box(Modifier.size(10.dp).background(if (connected || (internet && state.internet != null)) Color(0xFF4ADE80) else LockedAccent, CircleShape))
         Spacer(Modifier.height(8.dp))
         Text(
             when {
                 internet && state.internet == null -> "This phone doesn't know where to find ${state.macName} over the internet yet"
-                internet -> "${state.macName} over Tailscale · ${state.internet}"
+                internet -> "${state.macName} through ${state.internet}"
                 state.status == MacLink.Status.Connected -> "Connected to ${state.macName} · ${state.via}"
                 state.status == MacLink.Status.Searching -> "Looking for ${state.macName}…"
                 else -> "Connecting to ${state.macName}…"
@@ -252,8 +255,8 @@ private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: ()
         ) { Text("Control your Mac", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) }
         val hint = when {
             internet && state.internet == null ->
-                "On the Mac: Longarm menu → Internet, over Tailscale. Then connect at home once, or pair again."
-            internet -> "Tailscale must be on on this phone. You'll be asked for the join code you set on the Mac after 10 minutes away."
+                "On the Mac: Longarm menu → Internet Server… and Internet. Then connect at home once, so this phone learns it."
+            internet -> "You'll be asked for the join code you set on the Mac, again after 10 minutes away."
             connected && !remote.allowed -> "First, on the Mac: Longarm menu → Allow Remote Control"
             else -> null
         }
@@ -263,6 +266,67 @@ private fun HomeScreen(state: MacLink.State, onControl: () -> Unit, onForget: ()
         }
         Spacer(Modifier.height(40.dp))
         TextButton(onClick = onForget) { Text("Forget this Mac", color = Muted) }
+    }
+}
+
+/** How to connect, picked by the owner: two cards, the chosen one in Longarm orange. */
+@Composable
+private fun ModePicker(selected: MacLink.Mode, onSelect: (MacLink.Mode) -> Unit) {
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        ModeCard(selected == MacLink.Mode.Home, "At home", "Same Wi-Fi or USB", { WifiIcon(it) }) { onSelect(MacLink.Mode.Home) }
+        ModeCard(selected == MacLink.Mode.Internet, "Internet", "From anywhere", { GlobeIcon(it) }) { onSelect(MacLink.Mode.Internet) }
+    }
+}
+
+@Composable
+private fun RowScope.ModeCard(selected: Boolean, title: String, detail: String, icon: @Composable (Color) -> Unit, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(18.dp)
+    Column(
+        Modifier.weight(1f)
+            .clip(shape)
+            .background(if (selected) Accent.copy(alpha = 0.12f) else Surface)
+            .border(if (selected) 1.5.dp else 1.dp, if (selected) Accent else Line, shape)
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .padding(vertical = 18.dp, horizontal = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        icon(if (selected) Accent else Muted)
+        Spacer(Modifier.height(10.dp))
+        Text(title, color = if (selected) Color.White else Body, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(2.dp))
+        Text(detail, color = Muted, fontSize = 12.sp, textAlign = TextAlign.Center)
+    }
+}
+
+/** Three arcs over a dot. */
+@Composable
+private fun WifiIcon(color: Color) {
+    Canvas(Modifier.size(32.dp)) {
+        val stroke = Stroke(width = size.width * 0.09f, cap = StrokeCap.Round)
+        val base = Offset(size.width / 2, size.height * 0.8f)
+        for (fraction in listOf(0.26f, 0.5f, 0.74f)) {
+            val radius = size.width * fraction
+            drawArc(color, startAngle = 225f, sweepAngle = 90f, useCenter = false,
+                topLeft = Offset(base.x - radius, base.y - radius), size = Size(radius * 2, radius * 2), style = stroke)
+        }
+        drawCircle(color, radius = size.width * 0.07f, center = base)
+    }
+}
+
+/** A circle with a meridian and three parallels. */
+@Composable
+private fun GlobeIcon(color: Color) {
+    Canvas(Modifier.size(32.dp)) {
+        val width = size.width * 0.075f
+        val stroke = Stroke(width = width, cap = StrokeCap.Round)
+        val radius = size.width * 0.42f
+        drawCircle(color, radius = radius, center = center, style = stroke)
+        drawOval(color, topLeft = Offset(center.x - radius * 0.45f, center.y - radius), size = Size(radius * 0.9f, radius * 2), style = stroke)
+        for (offset in listOf(-0.5f, 0f, 0.5f)) {
+            val y = center.y + radius * offset
+            val half = radius * sqrt(1 - offset * offset)
+            drawLine(color, Offset(center.x - half, y), Offset(center.x + half, y), strokeWidth = width, cap = StrokeCap.Round)
+        }
     }
 }
 
