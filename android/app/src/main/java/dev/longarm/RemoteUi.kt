@@ -144,7 +144,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
  *   two fingers: pinch = zoom, move together = scroll the Mac
  *   three fingers: up = Mission Control, down = app windows, left / right = next Space
  *
- * Opens in landscape (⟳ switches, and the choice is remembered), whatever the phone's rotation lock.
+ * Always opens in landscape, whatever the phone's rotation lock: a Mac screen fits it far better.
+ * ⟳ switches for as long as it's open.
  * Controls float over the picture: on the left stop, rotate, keyboard and hide; on the
  * right the modifier and common keys. Opening this screen asks the Mac to start remote control
  * (it has to be allowed in the Longarm menu there); leaving stops it.
@@ -157,7 +158,7 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
     val held = remember { mutableStateListOf<String>() }
     var controls by remember { mutableStateOf(true) }
     var typing by remember { mutableStateOf(false) }
-    var landscape by remember { mutableStateOf(Remote.landscape) }
+    var landscape by remember { mutableStateOf(true) }
     val zoom = remember { ZoomState() }
     val dictation by Remote.dictation.collectAsStateWithLifecycle()
     val context = LocalContext.current
@@ -239,7 +240,6 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
                         RailButton("✕", "Stop remote control") { onExit() }
                         RailButton("⟳", "Rotate") {
                             landscape = !landscape
-                            Remote.landscape = landscape
                             activity?.requestedOrientation =
                                 if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                         }

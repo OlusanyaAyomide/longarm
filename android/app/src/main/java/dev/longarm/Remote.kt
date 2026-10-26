@@ -118,10 +118,6 @@ object Remote {
 
     // MARK: settings, remembered
 
-    /** Opens sideways (a Mac screen fits a landscape phone far better); ⟳ changes it. */
-    var landscape: Boolean
-        get() = prefs.getBoolean("landscape", true)
-        set(value) = prefs.edit().putBoolean("landscape", value).apply()
 
     /** The keyboard: how far it's dragged up from the bottom (dp), and its blur, 0…1. */
     var keyboardLift: Float
