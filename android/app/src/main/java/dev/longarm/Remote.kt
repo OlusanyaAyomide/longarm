@@ -62,6 +62,16 @@ object Remote {
     private val _problem = MutableStateFlow<String?>(null)
     val problem: StateFlow<String?> = _problem.asStateFlow()
 
+    /** What has keyboard focus on the Mac: somewhere to type, a password field, or neither. */
+    enum class Focus { None, Text, Secure }
+
+    private val _focus = MutableStateFlow(Focus.None)
+    val focus: StateFlow<Focus> = _focus.asStateFlow()
+
+    private fun readFocus(kind: String?) {
+        _focus.value = when (kind) { "text" -> Focus.Text; "secure" -> Focus.Secure; else -> Focus.None }
+    }
+
     /** Over the internet: whether the connection goes through the relay (true) or directly. */
     private val _relayed = MutableStateFlow<Boolean?>(null)
     val relayed: StateFlow<Boolean?> = _relayed.asStateFlow()
@@ -275,6 +285,7 @@ object Remote {
         PhoneMic.stop()
         _dictation.value = Dictation()
         _relayed.value = null
+        _focus.value = Focus.None
         show(null, -1)
     }
 
@@ -284,6 +295,7 @@ object Remote {
             "state" -> {
                 val wasAllowed = _state.value.allowed
                 _state.value = State(message.optBoolean("on"), message.optBoolean("allowed"), error)
+                readFocus(message.optString("focus"))
                 if (!_state.value.on && _dictation.value.on) {   // stopped on the Mac: so is dictation
                     PhoneMic.stop()
                     _dictation.value = Dictation()
@@ -318,6 +330,7 @@ object Remote {
                     else -> _dictation.value = current.copy(live = message.optString("text"))
                 }
             }
+            "focus" -> readFocus(message.optString("kind"))
             "notice" -> {
                 notice(message.optString("text"))
                 if (wanted && !_ready.value) _problem.value = message.optString("text")

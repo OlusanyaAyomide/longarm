@@ -3,9 +3,13 @@ package dev.longarm
 import android.graphics.SurfaceTexture
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.input.pointer.PointerEvent
@@ -202,6 +206,7 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
     }
 
     val relayed by Remote.relayed.collectAsStateWithLifecycle()
+    val focus by Remote.focus.collectAsStateWithLifecycle()
     Box(modifier.background(Color.Black).clipToBounds()) {
         if (area != null) {
             ZoomableScreen(area, zoom, vibrate, onTapOutside = { typing = false })
@@ -256,7 +261,8 @@ internal fun RemotePane(state: MacLink.State, onExit: () -> Unit, modifier: Modi
                             activity?.requestedOrientation =
                                 if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
                         }
-                        RailButton("⌨", "Keyboard", active = typing) { typing = !typing }
+                        RailButton("⌨", focusDescription(focus), active = typing,
+                            badge = { if (!typing) FocusBadge(focus) }) { typing = !typing }
                         RailButton("R", "Right-click where the pointer is") { vibrate(); Remote.rightClickHere() }
                         // Getting out of a full-screen app: Mission Control, the Spaces either side, leave full screen.
                         RailButton("▦", "Mission Control") { press("up", "control") }
@@ -308,19 +314,49 @@ private fun Rail(modifier: Modifier, content: @Composable () -> Unit) {
 
 @Composable
 private fun RailButton(
-    label: String, description: String, modifier: Modifier = Modifier, active: Boolean = false, activeColor: Color = HeldAccent, onClick: () -> Unit,
+    label: String, description: String, modifier: Modifier = Modifier, active: Boolean = false, activeColor: Color = HeldAccent,
+    badge: @Composable BoxScope.() -> Unit = {}, onClick: () -> Unit,
 ) {
-    Box(
-        modifier
-            .size(40.dp)
-            .clip(CircleShape)
-            .background(if (active) activeColor else Color.Black.copy(alpha = 0.5f))
-            .border(1.dp, Color.White.copy(alpha = if (active) 0f else 0.18f), CircleShape)
-            .clickable(onClickLabel = description, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(label, color = if (active) Background else Color.White, fontSize = if (label.length > 2) 11.sp else 15.sp,
-            fontWeight = FontWeight.SemiBold, maxLines = 1)
+    Box(modifier.size(40.dp)) {
+        Box(
+            Modifier
+                .matchParentSize()
+                .clip(CircleShape)
+                .background(if (active) activeColor else Color.Black.copy(alpha = 0.5f))
+                .border(1.dp, Color.White.copy(alpha = if (active) 0f else 0.18f), CircleShape)
+                .clickable(onClickLabel = description, onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(label, color = if (active) Background else Color.White, fontSize = if (label.length > 2) 11.sp else 15.sp,
+                fontWeight = FontWeight.SemiBold, maxLines = 1)
+        }
+        badge()
+    }
+}
+
+private fun focusDescription(focus: Remote.Focus) = when (focus) {
+    Remote.Focus.Text -> "Keyboard (a text field is focused on the Mac)"
+    Remote.Focus.Secure -> "Keyboard (a password field is focused on the Mac)"
+    Remote.Focus.None -> "Keyboard"
+}
+
+/**
+ * On the keyboard button: an orange dot when what has focus on the Mac takes typing, a lock when
+ * it's a password field, nothing otherwise.
+ */
+@Composable
+private fun BoxScope.FocusBadge(focus: Remote.Focus) {
+    if (focus == Remote.Focus.None) return
+    Canvas(Modifier.align(Alignment.TopEnd).size(14.dp)) {
+        val ring = size.width * 0.14f
+        drawCircle(Background, radius = size.minDimension / 2)
+        drawCircle(Accent, radius = size.minDimension / 2 - ring)
+        if (focus == Remote.Focus.Secure) {   // a little padlock, dark on the orange
+            val w = size.width
+            drawArc(Background, startAngle = 180f, sweepAngle = 180f, useCenter = false,
+                topLeft = Offset(w * 0.36f, w * 0.24f), size = Size(w * 0.28f, w * 0.3f), style = Stroke(width = w * 0.08f))
+            drawRoundRect(Background, topLeft = Offset(w * 0.3f, w * 0.4f), size = Size(w * 0.4f, w * 0.32f), cornerRadius = CornerRadius(w * 0.05f))
+        }
     }
 }
 

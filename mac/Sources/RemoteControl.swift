@@ -14,7 +14,8 @@ import IOKit.pwr_mgt
 ///               points}, type {text}, key {key, modifiers: [cmd, shift, option, control]},
 ///               keyframe (the phone's video decoder needs one), dictate {on}, then binary audio:
 ///               0x03 + 16 kHz mono 16-bit PCM
-/// Mac → phone:  state {on, allowed, error}, screen (see `ScreenShare`), dictation {text: words in
+/// Mac → phone:  state {on, allowed, error, focus}, focus {kind: none | text | secure: what has
+///               keyboard focus on the Mac, see `FocusWatcher`}, screen (see `ScreenShare`), dictation {text: words in
 ///               progress | final: a finished phrase, done, error}, and binary video frames:
 ///               0x02, generation (UInt32), key frame (UInt8), width, height (UInt16), H.264
 final class RemoteControl: NSObject {
@@ -32,6 +33,7 @@ final class RemoteControl: NSObject {
     private let share: ScreenShare
     private let input: InputInjector
     private let dictation = PhoneDictation()
+    private let focus = FocusWatcher()
     private var banner: NSPanel?
     private var idleTimer: Timer?
     private var keepAwake: IOPMAssertionID = 0
@@ -51,6 +53,10 @@ final class RemoteControl: NSObject {
         dictation.onError = { [weak self] message in
             self?.broadcast?(["type": "dictation", "text": "", "done": true, "error": message])
         }
+        focus.onChange = { [weak self] kind in
+            DebugLog.write("keyboard focus: \(kind.rawValue)")
+            self?.broadcast?(["type": "focus", "kind": kind.rawValue])
+        }
     }
 
     /// The phone's microphone: 0x03, then PCM. Only while remote control is on and dictating.
@@ -69,7 +75,7 @@ final class RemoteControl: NSObject {
     }
 
     func stateMessage(error: String? = nil) -> [String: Any] {
-        ["type": "state", "on": isActive, "allowed": allowed, "error": error ?? NSNull()]
+        ["type": "state", "on": isActive, "allowed": allowed, "error": error ?? NSNull(), "focus": focus.kind.rawValue]
     }
 
     /// Handles a message from the phone; returns false if it isn't one of these.
@@ -135,6 +141,7 @@ final class RemoteControl: NSObject {
         if keepAwake != 0 { IOPMAssertionRelease(keepAwake) }
         keepAwake = 0
         dictation.cancel()
+        focus.stop()
         idleTimer?.invalidate()
         idleTimer = nil
         banner?.orderOut(nil)
@@ -161,6 +168,7 @@ final class RemoteControl: NSObject {
         share.show(ScreenRegion(id: Self.screenID, name: Host.current().localizedName ?? "Mac", frame: screen.frame, on: screen))
         stayAwake()
         showBanner()
+        focus.start()
         onChange?()
         idleTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             guard let self, Date().timeIntervalSince(self.lastInput) > Self.idleLimit else { return }
