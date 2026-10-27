@@ -42,8 +42,9 @@ You choose how the phone connects, on both ends; it never falls back from one to
   allow it, otherwise through a TURN relay, end-to-end encrypted either way. They find each other
   through a small rendezvous server you run yourself (`server/`, installed on any VM with
   `deploy/`). On the Mac choose *Internet Server…* and turn on *Internet*, with a **join code**
-  (6–12 digits). Connect the phone at home once so it learns the Mac's key and server, then pick
-  **Internet** on it. It asks for the code, and again only after 10 minutes away.
+  (6–12 digits). Pair the phone with the QR code or pairing link, which then carry the Mac's key
+  and server, so it can pair from anywhere; then pick **Internet** on it. It asks for the code,
+  and again only after 10 minutes away.
 
 ## Safety
 

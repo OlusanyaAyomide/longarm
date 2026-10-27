@@ -86,6 +86,7 @@ object MacLink {
         InternetLink.onJoined = { _state.update { it.copy(status = Status.Connected, via = "Internet", joinError = null, problem = null) } }
         InternetLink.onRefused = { error, _ -> _state.update { it.copy(status = Status.Idle, via = "", joinError = error) } }
         InternetLink.onGaveUp = { reason -> _state.update { it.copy(status = Status.Idle, via = "", problem = reason) } }
+        InternetLink.onEnrolled = { store.load()?.let { store.save(it.copy(enrolled = true)) } }
     }
 
     /** Where the Mac is over the internet, if the home link has told us everything that needs. */
@@ -105,7 +106,7 @@ object MacLink {
         InternetLink.forgetTicket()
         store.save(pairing)
         stop()
-        _state.value = State(waiting(state.value.mode), pairing.macName, mode = state.value.mode)
+        _state.value = State(waiting(state.value.mode), pairing.macName, mode = state.value.mode, internet = internetHost(pairing))
         start()
     }
 
@@ -129,7 +130,7 @@ object MacLink {
         if (state.value.mode != Mode.Internet || (code == null && !hasTicket)) return
         stop()
         _state.update { it.copy(status = Status.Connecting, joinError = null, problem = null) }
-        InternetLink.connect(InternetLink.Mac(key, server, pairing.macName), code)
+        InternetLink.connect(InternetLink.Mac(key, server, pairing.macName, pairing.token, pairing.enrolled), code)
     }
 
     /** After the internet connection gave up: try again with what got us in last time. */
@@ -203,7 +204,7 @@ object MacLink {
         val pairing = store.load() ?: return
         val key = message.optString("key").takeIf { it.isNotEmpty() } ?: pairing.macKey
         val server = if (message.has("rendezvous") && !message.isNull("rendezvous")) message.optString("rendezvous") else pairing.rendezvous
-        val updated = pairing.copy(macKey = key, rendezvous = server)
+        val updated = pairing.copy(macKey = key, rendezvous = server, enrolled = true)   // it just sent its key (phone-key)
         if (updated != pairing) store.save(updated)
         _state.update { it.copy(internet = internetHost(updated)) }
     }

@@ -1,4 +1,5 @@
 import CoreMedia
+import CryptoKit
 import Foundation
 import LiveKitWebRTC
 
@@ -11,6 +12,10 @@ import LiveKitWebRTC
 ///
 /// A phone that drops off keeps its place for a minute, so it can come back (an ICE restart, or a
 /// fresh offer) without the session ending; after that it's closed.
+///
+/// A phone paired away from home introduces itself first (`enroll`): proof that it has the pairing
+/// link, an HMAC with the pairing token over its id, the Mac's id and the time. The token itself
+/// never travels. If it checks out the phone joins the paired phones and gets enrolled back.
 ///
 /// Phone → Mac signals: offer {session, sdp}, candidate {session, candidate, sdpMid, sdpMLineIndex},
 /// bye {session}. Mac → phone: answer {session, sdp}, candidate {…}, bye {session}. On the data
@@ -27,6 +32,8 @@ final class InternetLink: NSObject {
     var greeting: () -> [[String: Any]] = { [] }
     var macName = "Mac"
     var macId = ""
+    /// The pairing token, which a phone proves it has to enroll from afar.
+    var pairingToken: () -> String? = { nil }
 
     private let key: DeviceKey
     private let pairedPhones: PairedPhones
@@ -115,6 +122,24 @@ final class InternetLink: NSObject {
         default:
             break
         }
+    }
+
+    /// A newly paired phone, introducing itself over the internet. `data`: proof (base64), ts (ms), name.
+    func enroll(from phoneId: String, key: Data, data: [String: Any]) {
+        guard DeviceKey.id(of: key) == phoneId, let token = pairingToken(),
+              let proof = (data["proof"] as? String).flatMap({ Data(base64Encoded: $0) }),
+              let ts = data["ts"] as? Double, abs(Date().timeIntervalSince1970 - ts / 1000) < 10 * 60 else {
+            return DebugLog.write("internet: ignored an introduction without a valid proof")
+        }
+        let message = Data("longarm-enroll-v1\n\(phoneId)\n\(self.key.id)\n\(Int64(ts))".utf8)
+        guard HMAC<SHA256>.isValidAuthenticationCode(proof, authenticating: message, using: SymmetricKey(data: Data(token.utf8))) else {
+            return DebugLog.write("internet: an introduction's proof didn't match the pairing (an old link?)")
+        }
+        let name = (data["name"] as? String).flatMap { $0.isEmpty ? nil : String($0.prefix(60)) } ?? "Phone"
+        pairedPhones.add(key: key, name: name)   // lists it with the server too (AppDelegate)
+        DebugLog.write("internet: \(name) paired from afar")
+        guard let sealed = SignedSignal.seal(["kind": "enrolled", "session": ""], from: self.key.id, to: phoneId, key: self.key) else { return }
+        rendezvous.send(to: phoneId, data: sealed)
     }
 
     private func makeSession(phoneId: String, id: String) -> Session? {

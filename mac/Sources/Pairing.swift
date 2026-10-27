@@ -32,7 +32,9 @@ final class Pairing {
         try Self.writePrivate(token, to: directory.appendingPathComponent("token"))
     }
 
-    func link(host: String, port: UInt16, macName: String) -> String {
+    /// With `internet` (this Mac's key and rendezvous server), a phone can pair from anywhere: it
+    /// introduces itself over the internet with proof it has this link (see `InternetLink`).
+    func link(host: String, port: UInt16, macName: String, internet: (key: Data, rendezvous: URL)? = nil) -> String {
         var components = URLComponents()
         components.scheme = "longarm"
         components.host = "pair"
@@ -44,6 +46,11 @@ final class Pairing {
             URLQueryItem(name: "id", value: macId),
             URLQueryItem(name: "n", value: macName),
         ]
+        if let internet {
+            let key = internet.key.base64EncodedString()
+                .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")
+            components.queryItems! += [URLQueryItem(name: "k", value: key), URLQueryItem(name: "r", value: internet.rendezvous.absoluteString)]
+        }
         return components.string!
     }
 

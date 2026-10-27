@@ -133,6 +133,24 @@ test("only phones the Mac lists can reach it, and it only them", async () => {
   for (const device of [mac, phone, stranger]) device.socket.close();
 });
 
+test("a phone the Mac doesn't list yet can introduce itself, with its key", async () => {
+  const phone = new Device();
+  const mac = new Device();
+  await mac.join("mac", []);
+  await phone.join("phone");
+  phone.send({ type: "enroll", to: mac.id, data: { proof: "x" } });
+  assert.deepEqual(await mac.next(), { type: "enroll", from: phone.id, key: phone.spki.toString("base64"), data: { proof: "x" } });
+  // Still not allowed to signal until the Mac lists it.
+  phone.send({ type: "signal", to: mac.id, data: {} });
+  assert.equal((await phone.next()).code, "unreachable");
+  // A Mac that isn't online is unreachable for introductions too, and Macs can't introduce themselves.
+  phone.send({ type: "enroll", to: new Device().id, data: {} });
+  assert.equal((await phone.next()).code, "unreachable");
+  mac.send({ type: "enroll", to: phone.id, data: {} });
+  assert.equal((await mac.next()).code, "unreachable");
+  for (const device of [mac, phone]) device.socket.close();
+});
+
 test("a phone can't claim to be a Mac's allow list, or send it a list", async () => {
   const phone = new Device();
   await phone.join("phone");

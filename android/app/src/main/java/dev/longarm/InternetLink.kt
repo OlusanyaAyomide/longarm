@@ -47,13 +47,18 @@ import java.util.concurrent.TimeUnit
  * track, drawn on the remote view's texture; the same messages as the home link go over a data
  * channel, once the Mac lets the phone in with the join code or the ticket from last time.
  *
+ * A phone paired away from home (the link carried the Mac's key and server) first introduces
+ * itself: proof it has the pairing link, an HMAC with the pairing token that never itself leaves
+ * the phone. The Mac checks it, lists the phone, and answers "enrolled"; from then on it's like
+ * any phone that connected at home.
+ *
  * When the connection drops it tries, in turn: waiting a moment, an ICE restart (new paths, same
  * session), then a fresh connection on the ticket. While the Mac isn't signed in to the server it
  * retries every 10 s, for 2 minutes. Everything here runs on the main thread.
  */
 object InternetLink {
     /** The Mac to reach, from pairing and the home link. */
-    data class Mac(val key: ByteArray, val rendezvous: String, val name: String) {
+    data class Mac(val key: ByteArray, val rendezvous: String, val name: String, val token: String, val enrolled: Boolean) {
         val id: String get() = DeviceKey.idOf(key)
     }
 
@@ -62,6 +67,8 @@ object InternetLink {
     var onJoined: () -> Unit = {}
     var onRefused: (error: String, needsCode: Boolean) -> Unit = { _, _ -> }
     var onGaveUp: (reason: String) -> Unit = {}
+    /** The Mac accepted this phone's introduction: remember it. */
+    var onEnrolled: () -> Unit = {}
 
     private const val TAG = "Longarm"
     private const val TICKET = "joinTicket"
@@ -104,6 +111,7 @@ object InternetLink {
     private var offlineSince = 0L
     private var backoffMs = 1_000L
     private var serverFailures = 0   // in a row, before ever signing in this time
+    private var enrolled = false
 
     fun init(context: Context, deviceName: String) {
         this.context = context.applicationContext
@@ -124,6 +132,7 @@ object InternetLink {
         this.code = code
         active = true
         everJoined = false
+        enrolled = mac.enrolled
         offlineSince = 0
         serverFailures = 0
         backoffMs = 1_000
@@ -223,7 +232,7 @@ object InternetLink {
                 backoffMs = 1_000
                 readRelay(message.optJSONObject("turn"))
                 // A session that's still up only needs new paths; otherwise start one.
-                if (connection == null) startSession() else restartIce()
+                if (connection == null) begin() else restartIce()
             }
             "turn" -> readRelay(message.optJSONObject("turn"))
             "signal" -> {
@@ -256,7 +265,26 @@ object InternetLink {
         ladder?.cancel()
         ladder = scope.launch {
             delay(10_000)
-            if (active && signedIn) startSession()
+            if (active && signedIn) begin()
+        }
+    }
+
+    /** Introduces this phone first if the Mac doesn't know it yet, else connects. */
+    private fun begin() {
+        if (enrolled) return startSession()
+        val mac = mac ?: return
+        val ts = System.currentTimeMillis()
+        val hmac = javax.crypto.Mac.getInstance("HmacSHA256").apply {
+            init(javax.crypto.spec.SecretKeySpec(mac.token.toByteArray(), "HmacSHA256"))
+        }
+        val proof = hmac.doFinal("longarm-enroll-v1\n${DeviceKey.id}\n${mac.id}\n$ts".toByteArray())
+        Log.i(TAG, "internet: introducing this phone to the Mac")
+        rendezvous?.send(JSONObject().put("type", "enroll").put("to", mac.id).put("data", JSONObject()
+            .put("proof", Base64.encodeToString(proof, Base64.NO_WRAP)).put("ts", ts).put("name", deviceName)).toString())
+        ladder?.cancel()
+        ladder = scope.launch {
+            delay(15_000)
+            if (active && !enrolled) giveUp("${mac.name} didn't accept this phone. Pair again with a fresh link or QR code from its Longarm menu.")
         }
     }
 
@@ -337,6 +365,13 @@ object InternetLink {
     }
 
     private fun fromMac(fields: JSONObject) {
+        if (fields.optString("kind") == "enrolled") {
+            if (enrolled) return
+            Log.i(TAG, "internet: the Mac accepted this phone")
+            enrolled = true
+            onEnrolled()
+            return startSession()
+        }
         if (fields.optString("session") != session) return
         val pc = connection ?: return
         when (fields.optString("kind")) {

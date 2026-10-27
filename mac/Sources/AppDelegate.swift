@@ -99,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let rendezvous = RendezvousClient(key: deviceKey, allowed: { [weak self] in self?.pairedPhones.ids ?? [] })
         rendezvous.onStatus = { [weak self] _ in self?.refreshIcon() }
         let internet = InternetLink(key: deviceKey, pairedPhones: pairedPhones, joinCode: joinCode, rendezvous: rendezvous)
+        internet.pairingToken = { [weak pairing] in pairing?.token }
         internet.macName = macName
         internet.macId = pairing.macId
         internet.greeting = { [weak self] in self?.greeting() ?? [] }
@@ -109,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.phonesChanged()
         }
         rendezvous.onSignal = { [weak internet] from, data in internet?.handleSignal(from: from, data: data) }
+        rendezvous.onEnroll = { [weak internet] from, key, data in internet?.enroll(from: from, key: key, data: data) }
         pairedPhones.onChange = { [weak rendezvous] in rendezvous?.updateAllowList() }
         self.deviceKey = deviceKey
         self.rendezvous = rendezvous
@@ -484,7 +486,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func pairingLink() -> String? {
-        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, macName: macName)
+        pairing?.link(host: Self.primaryIPv4() ?? "127.0.0.1", port: Self.port, macName: macName,
+                      internet: deviceKey.flatMap { key in rendezvousURL.map { (key.publicKey, $0) } })
     }
 
     @objc private func showPairWindow() {

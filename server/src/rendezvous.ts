@@ -18,11 +18,16 @@ import { turnCredentials, type TurnConfig } from "./turn.ts";
  *   server → device  ready {id, turn?}   (after that:)
  *   device → server  signal {to, data}   → the other device gets signal {from, data}
  *   Mac → server     allow {ids}          which phones may reach it, replacing the list
+ *   phone → server   enroll {to, data}    a newly paired phone introduces itself to its Mac, which
+ *                                         gets enroll {from, key, data} even though it doesn't list
+ *                                         the phone yet; data carries proof that the phone was paired
+ *                                         (an HMAC with the pairing secret), checked by the Mac.
  *   device → server  turn                 → turn {turn}: fresh relay credentials
  *   server → device  error {code, to?}    unreachable | not-ready | bad-message | unknown-type
  *
  * A phone can only reach a Mac that lists it, and a Mac only phones it lists; to anyone else the
- * Mac is simply "unreachable", whether it's online or not. Connections close with the codes in
+ * Mac is simply "unreachable", whether it's online or not. The one exception is enroll, which a
+ * Mac answers only if the proof checks out (after which it lists the phone). Connections close with the codes in
  * `Close`.
  */
 
@@ -53,6 +58,7 @@ interface Client {
   nonce: string;
   role?: Role;
   id?: string;
+  key?: string;            // SPKI DER, base64
   allowed: Set<string>;   // Mac only
   window: { start: number; count: number };
   alive: boolean;
@@ -97,7 +103,7 @@ export function startRendezvous(server: Server, options: Options = {}): { close:
       devices[role].delete(id);
       previous.socket.close(Close.replaced, "connected again");
     }
-    Object.assign(client, { role, id, allowed });
+    Object.assign(client, { role, id, allowed, key: parsed.spki.toString("base64") });
     devices[role].set(id, client);
     log(`${role} ${short(id)} online`);
     send(client, { type: "ready", id, ...(options.turn && { turn: turnCredentials(options.turn, id, now()) }) });
@@ -128,6 +134,12 @@ export function startRendezvous(server: Server, options: Options = {}): { close:
         if (!allowed) return send(client, { type: "error", code: "bad-message" });
         client.allowed = allowed;
         return;
+      }
+      case "enroll": {
+        const mac = client.role === "phone" && typeof message.to === "string" ? devices.mac.get(message.to) : undefined;
+        if (typeof message.data !== "object" || message.data === null) return send(client, { type: "error", code: "bad-message" });
+        if (!mac) return send(client, { type: "error", code: "unreachable", to: message.to });
+        return send(mac, { type: "enroll", from: client.id, key: client.key, data: message.data });
       }
       case "turn":
         return send(client, { type: "turn", turn: options.turn ? turnCredentials(options.turn, client.id, now()) : null });

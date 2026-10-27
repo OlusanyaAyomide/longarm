@@ -113,7 +113,7 @@ class MainActivity : ComponentActivity() {
 
                 Box(Modifier.fillMaxSize().background(Background).systemBarsPadding()) {
                     when {
-                        state.status == MacLink.Status.Unpaired -> PairScreen(error = pairError, onScan = ::scanQrCode)
+                        state.status == MacLink.Status.Unpaired -> PairScreen(error = pairError, onScan = ::scanQrCode, onLink = ::acceptLink)
                         controlling -> RemotePane(state, onExit = { controlling = false }, Modifier.fillMaxSize())
                         else -> HomeScreen(
                             state,
@@ -198,7 +198,9 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun PairScreen(error: String?, onScan: () -> Unit) {
+private fun PairScreen(error: String?, onScan: () -> Unit, onLink: (String) -> Unit) {
+    var link by remember { mutableStateOf("") }
+    val pairing = remember(link) { link.trim().takeIf { it.isNotEmpty() }?.let(Pairing::parse) }
     Column(
         Modifier.fillMaxSize().padding(32.dp),
         verticalArrangement = Arrangement.Center,
@@ -209,11 +211,27 @@ private fun PairScreen(error: String?, onScan: () -> Unit) {
         Text("Your Mac, from your phone", color = Muted, fontSize = 16.sp)
         Spacer(Modifier.height(24.dp))
         Text(
-            "On your Mac, click the Longarm icon in the menu bar → Pair a Phone…, then scan the code.",
+            "On your Mac, click the Longarm icon in the menu bar → Pair a Phone…, then scan the code. Or copy the Mac's pairing link (Copy Pairing Link) to this phone and paste it below.",
             color = Muted, textAlign = TextAlign.Center, fontSize = 16.sp,
         )
         Spacer(Modifier.height(28.dp))
         Button(onClick = onScan) { Text("Scan QR code") }
+        Spacer(Modifier.height(24.dp))
+        // Messaging apps don't make longarm:// links tappable: paste it here instead.
+        OutlinedTextField(
+            value = link, onValueChange = { link = it },
+            placeholder = { Text("…or paste the pairing link here") },
+            singleLine = true, modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(24.dp),   // in keeping with the round buttons
+            supportingText = {
+                when {
+                    link.isBlank() -> {}
+                    pairing != null -> Text("✓ ${pairing.macName}${if (pairing.rendezvous != null) " · works from anywhere" else " · same Wi-Fi only"}", color = Color(0xFF4ADE80))
+                    else -> Text("Not a Longarm pairing link", color = LockedAccent)
+                }
+            },
+        )
+        TextButton(onClick = { onLink(link.trim()) }, enabled = pairing != null) { Text("Pair") }
         if (error != null) {
             Spacer(Modifier.height(16.dp))
             Text(error, color = LockedAccent, textAlign = TextAlign.Center)

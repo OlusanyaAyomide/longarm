@@ -21,6 +21,8 @@ final class RendezvousClient: NSObject, URLSessionWebSocketDelegate {
     var onStatus: ((Status) -> Void)?
     /// A message from a phone (still to be checked: see `SignedSignal`).
     var onSignal: ((_ from: String, _ data: [String: Any]) -> Void)?
+    /// A newly paired phone introducing itself, with its key (still to be checked: see `InternetLink.enroll`).
+    var onEnroll: ((_ from: String, _ key: Data, _ data: [String: Any]) -> Void)?
     private(set) var status = Status.off
     /// Relay credentials, fresh from the server.
     private(set) var turn: Turn?
@@ -118,6 +120,11 @@ final class RendezvousClient: NSObject, URLSessionWebSocketDelegate {
             readTurn(message["turn"])
         case "signal":
             if let from = message["from"] as? String, let data = message["data"] as? [String: Any] { onSignal?(from, data) }
+        case "enroll":
+            if let from = message["from"] as? String, let key = (message["key"] as? String).flatMap({ Data(base64Encoded: $0) }),
+               let data = message["data"] as? [String: Any] {
+                onEnroll?(from, key, data)
+            }
         case "error":
             DebugLog.write("rendezvous: \(message["code"] as? String ?? "error")")
         default:

@@ -23,7 +23,11 @@ android {
         versionCode = Duration.between(LocalDateTime.of(2026, 1, 1, 0, 0), buildTime).toMinutes().toInt()
         versionName = "0.1.0"
         // WebRTC's native code for phones (and the x86_64 emulator); 32-bit x86 isn't worth the size.
-        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+        // -Pabis=arm64-v8a builds for current phones only, for a smaller APK to share.
+        ndk {
+            abiFilters += (project.findProperty("abis") as String?)?.split(",")
+                ?: listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
         buildConfigField(
             "String", "BUILD_TIME",
             "\"${buildTime.format(DateTimeFormatter.ofPattern("d MMM HH:mm", Locale.ENGLISH))}\"",

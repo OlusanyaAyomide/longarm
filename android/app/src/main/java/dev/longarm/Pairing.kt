@@ -2,6 +2,7 @@ package dev.longarm
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 
 /** Everything needed to reach and trust one Mac, as encoded in its longarm://pair QR code. */
 data class Pairing(
@@ -16,6 +17,8 @@ data class Pairing(
      *  base64; see [DeviceKey]) and its rendezvous server. */
     val macKey: String? = null,
     val rendezvous: String? = null,
+    /** Whether the Mac knows this phone's key: learned at home, or introduced over the internet. */
+    val enrolled: Boolean = false,
 ) {
     companion object {
         fun parse(link: String): Pairing? {
@@ -28,6 +31,11 @@ data class Pairing(
                 fingerprint = uri.getQueryParameter("f")?.lowercase()?.takeIf { it.length == 64 } ?: return null,
                 macId = uri.getQueryParameter("id") ?: return null,
                 macName = uri.getQueryParameter("n") ?: "Mac",
+                // Newer Macs add their key and server, so a phone can pair from anywhere.
+                macKey = uri.getQueryParameter("k")?.let { key ->
+                    runCatching { Base64.encodeToString(Base64.decode(key, Base64.URL_SAFE), Base64.NO_WRAP) }.getOrNull()
+                },
+                rendezvous = uri.getQueryParameter("r"),
             )
         }
     }
@@ -46,6 +54,7 @@ class PairingStore(context: Context) {
             macName = prefs.getString("macName", null) ?: "Mac",
             macKey = prefs.getString("macKey", null),
             rendezvous = prefs.getString("rendezvous", null),
+            enrolled = prefs.getBoolean("enrolled", false),
         )
     }
 
@@ -59,6 +68,7 @@ class PairingStore(context: Context) {
             .putString("macName", pairing.macName)
             .putString("macKey", pairing.macKey)
             .putString("rendezvous", pairing.rendezvous)
+            .putBoolean("enrolled", pairing.enrolled)
             .apply()
     }
 
